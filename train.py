@@ -1,3 +1,6 @@
+import os
+import random
+
 from tqdm import tqdm
 import numpy as np
 from PIL import Image
@@ -10,12 +13,12 @@ from torch import nn, optim
 from torch.autograd import Variable, grad
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, utils
-
+import json
 from model import Glow
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-parser = argparse.ArgumentParser(description="Glow trainer")
+parser = argparse.ArgumentParser(description="Glow trainer", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("--batch", default=16, type=int, help="batch size")
 parser.add_argument("--iter", default=200000, type=int, help="maximum iterations")
 parser.add_argument(
@@ -35,7 +38,14 @@ parser.add_argument("--lr", default=1e-4, type=float, help="learning rate")
 parser.add_argument("--img_size", default=64, type=int, help="image size")
 parser.add_argument("--temp", default=0.7, type=float, help="temperature of sampling")
 parser.add_argument("--n_sample", default=20, type=int, help="number of samples")
-parser.add_argument("path", metavar="PATH", type=str, help="Path to image directory")
+parser.add_argument("--ckpt_path", default='', help='Path to checkpoint for model')
+parser.add_argument("--opt_path", default='', help='Path to checkpoint for optimizer')
+celeba_path = '/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba'
+parser.add_argument("--path", metavar="PATH", default=celeba_path, type=str, help="Path to image directory")
+parser.add_argument('--eval', action='store_true', default=False, help='Use for evaluating '
+                                                                                                  'a model')
+parser.add_argument('--sample_name', default='', help='Name of sample size in case of evaluation')
+parser.add_argument('--exp_name', default='', help='Name experiment for saving dirs')
 
 
 def sample_data(path, batch_size, image_size):
@@ -95,6 +105,7 @@ def calc_loss(log_p, logdet, image_size, n_bins):
 
 def train(args, model, optimizer):
     dataset = iter(sample_data(args.path, args.batch, args.img_size))
+    print("Loaded Dataset", flush=True)
     n_bins = 2.0 ** args.n_bits
 
     z_sample = []
@@ -144,7 +155,7 @@ def train(args, model, optimizer):
                 with torch.no_grad():
                     utils.save_image(
                         model_single.reverse(z_sample).cpu().data,
-                        f"sample/{str(i + 1).zfill(6)}.png",
+                        f'experiments/{args.exp_name}/samples/{str(i + 1).zfill(6)}.png',
                         normalize=True,
                         nrow=10,
                         range=(-0.5, 0.5),
@@ -152,24 +163,65 @@ def train(args, model, optimizer):
 
             if i % 10000 == 0:
                 torch.save(
-                    model.state_dict(), f"checkpoint/model_{str(i + 1).zfill(6)}.pt"
+                    model.state_dict(), f'experiments/{args.exp_name}/checkpoints/model_{str(i + 1).zfill(6)}.pt'
                 )
                 torch.save(
-                    optimizer.state_dict(), f"checkpoint/optim_{str(i + 1).zfill(6)}.pt"
+                    optimizer.state_dict(), f'experiments/{args.exp_name}/checkpoints/optim_{str(i + 1).zfill(6)}.pt'
                 )
+
+
+def evaluate(args, eval_model):
+    z_sample = []
+    z_shapes = calc_z_shapes(3, args.img_size, args.n_flow, args.n_block)
+    print("*" * 30)
+    print(z_shapes)
+    print("*" * 30)
+    for z in z_shapes:
+        z_new = torch.randn(args.n_sample, *z) * args.temp
+        z_sample.append(z_new.to(device))
+
+    file_name = f'experiments/{args.exp_name}/{args.sample_name}'
+    if not args.sample_name:
+        file_name += 'eval'
+    file_name += ".png"
+    with torch.no_grad():
+        utils.save_image(
+            eval_model.reverse(z_sample).cpu().data,
+            file_name,
+            normalize=True,
+            nrow=10,
+            range=(-0.5, 0.5),
+        )
+
 
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    if not args.exp_name:
+        args.exp_name = chr(random.randint(97, ord('z'))) + chr(random.randint(97, ord('z')))
     print(args)
+    os.makedirs(f'experiments/{args.exp_name}')
+    if not args.eval:
+        os.makedirs(f'experiments/{args.exp_name}/samples')
+        os.makedirs(f'experiments/{args.exp_name}/checkpoints')
+    with open(f'experiments/{args.exp_name}/args.json', 'w') as out_j:
+        json.dump(vars(args), out_j, indent=4)
 
     model_single = Glow(
         3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu
     )
+
     model = nn.DataParallel(model_single)
     # model = model_single
+    if args.ckpt_path:
+        model.load_state_dict(torch.load(args.ckpt_path, map_location=lambda storage, loc: storage))
     model = model.to(device)
-
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-
-    train(args, model, optimizer)
+    print("Loaded Model successfully", flush=True)
+    if args.eval:
+        evaluate(args, model_single)
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        if args.opt_path:
+            optimizer.load_state_dict(torch.load(args.opt_path, map_location=lambda storage, loc: storage))
+            print("Loaded Optimizer successfully", flush=True)
+        train(args, model, optimizer)
