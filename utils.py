@@ -39,19 +39,18 @@ def get_args() -> EasyDict:
     parser.add_argument('--sample_name', default='', help='Name of sample size in case of evaluation')
     parser.add_argument('--exp_name', default='', help='Name experiment for saving dirs')
     parser.add_argument('--num_workers', default=8, type=int, help='Number of worker threads for dataloader')
-    parser.add_argument('--config', default='', help='Name of json config file (optional), will be overridden by cmd')
+    parser.add_argument('--config', default='', help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', default=4, type=int, help='number of gpu devices to use')
 
     args = parser.parse_args()
-    if 'ffhq' in args.path.lower():
-        args.path = ffhq_path
-    out_dict = {}
+    out_dict = vars(args)
     if args.config:
         with open(args.config, "r") as in_j:
             config_dict = json.load(in_j)
         out_dict.update(config_dict)
+    if 'ffhq' in args.path.lower():
+        args.path = ffhq_path
 
-    out_dict.update(vars(args))
     return EasyDict(out_dict)
 
 

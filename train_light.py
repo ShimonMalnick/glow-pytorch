@@ -34,10 +34,10 @@ class Lite(LightningLite):
         num_epcohs = max(1, args.iter // len(dataloader.dataset))
         model.train()
 
-        n_bins = 2.0 ** self.args.n_bits
+        n_bins = 2.0 ** args.n_bits
 
         z_sample = []
-        z_shapes = calc_z_shapes(3, self.args.img_size, self.args.n_flow, self.args.n_block)
+        z_shapes = calc_z_shapes(3, args.img_size, args.n_flow, args.n_block)
         for z in z_shapes:
             z_new = torch.randn(args.n_sample, *z) * args.temp
             z_sample.append(z_new)
