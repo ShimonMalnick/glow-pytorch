@@ -1,77 +1,11 @@
-import os
-import random
-
 from tqdm import tqdm
-import numpy as np
-from PIL import Image
 from math import log, sqrt, pi
-
-import argparse
-
+from utils import get_args, save_dict_as_json, make_exp_dir
 import torch
 from torch import nn, optim
-from torch.autograd import Variable, grad
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms, utils
-import json
+from torchvision import utils
 from model import Glow
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-parser = argparse.ArgumentParser(description="Glow trainer", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument("--batch", default=16, type=int, help="batch size")
-parser.add_argument("--iter", default=200000, type=int, help="maximum iterations")
-parser.add_argument(
-    "--n_flow", default=32, type=int, help="number of flows in each block"
-)
-parser.add_argument("--n_block", default=4, type=int, help="number of blocks")
-parser.add_argument(
-    "--no_lu",
-    action="store_true",
-    help="use plain convolution instead of LU decomposed version",
-)
-parser.add_argument(
-    "--affine", action="store_true", help="use affine coupling instead of additive"
-)
-parser.add_argument("--n_bits", default=5, type=int, help="number of bits")
-parser.add_argument("--lr", default=1e-4, type=float, help="learning rate")
-parser.add_argument("--img_size", default=64, type=int, help="image size")
-parser.add_argument("--temp", default=0.7, type=float, help="temperature of sampling")
-parser.add_argument("--n_sample", default=20, type=int, help="number of samples")
-parser.add_argument("--ckpt_path", default='', help='Path to checkpoint for model')
-parser.add_argument("--opt_path", default='', help='Path to checkpoint for optimizer')
-celeba_path = '/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba'
-parser.add_argument("--path", metavar="PATH", default=celeba_path, type=str, help="Path to image directory")
-parser.add_argument('--eval', action='store_true', default=False, help='Use for evaluating '
-                                                                                                  'a model')
-parser.add_argument('--sample_name', default='', help='Name of sample size in case of evaluation')
-parser.add_argument('--exp_name', default='', help='Name experiment for saving dirs')
-
-
-def sample_data(path, batch_size, image_size):
-    transform = transforms.Compose(
-        [
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-        ]
-    )
-
-    dataset = datasets.ImageFolder(path, transform=transform)
-    loader = DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=4)
-    loader = iter(loader)
-
-    while True:
-        try:
-            yield next(loader)
-
-        except StopIteration:
-            loader = DataLoader(
-                dataset, shuffle=True, batch_size=batch_size, num_workers=4
-            )
-            loader = iter(loader)
-            yield next(loader)
+from utils import sample_data
 
 
 def calc_z_shapes(n_channel, input_size, n_flow, n_block):
@@ -194,18 +128,12 @@ def evaluate(args, eval_model):
         )
 
 
-
 if __name__ == "__main__":
-    args = parser.parse_args()
-    if not args.exp_name:
-        args.exp_name = chr(random.randint(97, ord('z'))) + chr(random.randint(97, ord('z')))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    args = get_args()
+    args.exp_name = make_exp_dir(args.exp_name)
     print(args)
-    os.makedirs(f'experiments/{args.exp_name}')
-    if not args.eval:
-        os.makedirs(f'experiments/{args.exp_name}/samples')
-        os.makedirs(f'experiments/{args.exp_name}/checkpoints')
-    with open(f'experiments/{args.exp_name}/args.json', 'w') as out_j:
-        json.dump(vars(args), out_j, indent=4)
+    save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
     model_single = Glow(
         3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu
