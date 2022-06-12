@@ -7,7 +7,7 @@ import torch
 from train import calc_loss, calc_z_shapes
 from pytorch_lightning.loggers import WandbLogger
 from utils import get_args, make_exp_dir, save_dict_as_json, get_dataloader
-from torchvision.utils import save_image
+from torchvision.utils import make_grid
 
 
 class LitGlow(pl.LightningModule):
@@ -96,12 +96,14 @@ class LitGlow(pl.LightningModule):
         self.log("train/logdet", log_det, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         if (batch_idx + 1) % 100 == 0:
             with torch.no_grad():
-                save_image(
-                    self.reverse(self.z_sample).cpu().data,
-                    f'experiments/{self.extra_args["exp_name"]}/samples/{str(self.global_step + 1).zfill(6)}.png',
-                    normalize=True,
-                    nrow=10,
-                    range=(-0.5, 0.5))
+                image = make_grid(self.reverse(self.z_sample), normalize=True, nrow=10, range=(-0.5, 0.5))
+                self.logger.log_image(key=f'samples', images=[image])
+                # save_image(
+                #     self.reverse(self.z_sample).cpu().data,
+                #     f'experiments/{self.extra_args["exp_name"]}/samples/{str(self.global_step + 1).zfill(6)}.png',
+                #     normalize=True,
+                #     nrow=10,
+                #     range=(-0.5, 0.5))
 
         return {'train_loss': loss}
 

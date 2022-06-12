@@ -37,6 +37,18 @@ def calc_loss(log_p, logdet, image_size, n_bins):
     )
 
 
+# comment on the repo from https://github.com/rosinality/glow-pytorch/issues/13
+def calc_loss_changed(log_p, logdet, image_size, n_bins):
+    n_pixel = image_size * image_size * 3
+    loss = -log(n_bins) * n_pixel
+    loss = loss + logdet.mean() + log_p.mean()
+    return (
+        -loss / (log(2) * n_pixel),
+        log_p.mean() / (log(2) * n_pixel),
+        logdet.mean() / (log(2) * n_pixel)
+    )
+
+
 def train(args, model, optimizer):
     dataset = iter(sample_data(args.path, args.batch, args.img_size))
     print("Loaded Dataset", flush=True)
