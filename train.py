@@ -6,9 +6,10 @@ from torch import nn, optim
 from torchvision import utils
 from model import Glow
 from utils import sample_data
+from typing import List, Tuple
 
 
-def calc_z_shapes(n_channel, input_size, n_flow, n_block):
+def calc_z_shapes(n_channel, input_size, n_flow, n_block) -> List[Tuple]:
     z_shapes = []
 
     for i in range(n_block - 1):

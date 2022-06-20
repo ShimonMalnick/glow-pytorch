@@ -1,8 +1,8 @@
 {
-    "batch": 4,
+    "batch": 32,
     "iter":  700000,
-    "n_flow": 32,
-    "n_block": 6,
+    "n_flow": 48,
+    "n_block": 4,
     "no_lu": false,
     "affine":  false,
     "n_bits": 5,
@@ -11,7 +11,7 @@
     "temp": 0.7,
     "n_sample": 20,
     "path": "ffhq",
-    "exp_name": "lightning_test",
+    "exp_name": "ffhq_mid",
     "num_workers": 8,
-    "devices": -1
+    "devices": 8
 }
