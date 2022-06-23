@@ -183,15 +183,26 @@ def get_rand_images_logprob(model, device, save_dir, num_images=500)-> Tuple[np.
     return np_total, np_last
 
 
+def produce_partial_latents_images(input_im_path, args, model, device, save_dir='outputs/partial_latents', change_last=False):
+    to_tens = Compose([Resize(args.img_size), ToTensor()])
+    img = to_tens(Image.open(input_im_path)).to(device).unsqueeze(0) - 0.5
+    with torch.no_grad():
+        _, _, z_list = model(img)
+    suffix = '_changed' if change_last else ''
+    if change_last:
+        z_list[-1] = torch.randn_like(z_list[-1])
+    sample_from_model(z_list, model, f'{save_dir}/no_erase{suffix}.png', reconstruct=True)
+    for i in range(len(z_list) - 1):
+        z_list[i].zero_()
+        sample_from_model(z_list, model, f'{save_dir}/erase_{i}{suffix}.png', reconstruct=True)
+
+
 def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device)
-    ds_root = '/home/yandex/AMNLP2021/malnick/datasets'
-    roots = [ds_root + '/ffhq_256_samples', ds_root + '/cars_train', ds_root + '/chest_xrays/images', ds_root + '/celebA/celeba/img_align_celeba']
-    labels = ['ffhq', 'cars', 'chest_xrays', 'celebA', 'random']
-    save_dir = 'outputs/ood_logprob'
-    plot_logprobs(roots, model, device, labels, save_dir, num_images=500)
+    input_image = 'outputs/partial_latents/input.png'
+    produce_partial_latents_images(input_image, args, model, device, change_last=True)
 
 
 if __name__ == '__main__':
