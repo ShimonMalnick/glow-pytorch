@@ -245,8 +245,19 @@ class RandomDataset(Dataset):
         return img, 0
 
 
+def quantize_image(img, n_bits):
+    """
+    assuming the input is in [0, 1] of 8 bit images for each channel
+    """
+    if n_bits < 8:
+        img = img * 255
+        img = torch.floor(img / (2 ** (8 - n_bits)))
+        img /= (2 ** n_bits)
+    return img - 0.5
+
+
 def get_bpd_of_images(args, model, device, paths=None, **kwargs):
-    to_tensor = Compose([Resize((args.img_size, args.img_size)), ToTensor(), lambda tens: tens - 0.5])
+    to_tensor = Compose([Resize((args.img_size, args.img_size)), ToTensor(), lambda tens: quantize_image(tens, args.n_bits)])
     if 'random' in kwargs:
         scale = 0.5 if not 'scale' in kwargs else kwargs['scale']
         n = kwargs['random']
@@ -261,7 +272,7 @@ def get_bpd_of_images(args, model, device, paths=None, **kwargs):
     return compute_bpd(2 ** args.n_bits, args.img_size, model, device, dl)
 
 
-def get_bpd_ood(args, model, device):
+def get_bpd_ood(args, model, device, save_dir='outputs/nll'):
     ds_root = '/home/yandex/AMNLP2021/malnick/datasets'
     roots = [ds_root + '/ffhq_256_samples', ds_root + '/cars_train', ds_root + '/chest_xrays/images',
              ds_root + '/celebA/celeba/img_align_celeba']
@@ -275,7 +286,6 @@ def get_bpd_ood(args, model, device):
         cur_paths = cur_paths[:num_images]
         paths.append(cur_paths)
     labels = ['ffhq', 'cars', 'chest_xrays', 'celebA']
-    save_dir = 'outputs/nll'
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     data = {}
@@ -293,7 +303,8 @@ def get_bpd_ood(args, model, device):
     data['uniform'] = uni_bpd
     with open(f'{save_dir}/bpd_ood.json', 'w') as f:
         json.dump(data, f, indent=4)
-
+    with open(f'{save_dir}/args.json', 'w') as f:
+        json.dump(vars(args), f, indent=4)
     return data
 
 
@@ -301,7 +312,7 @@ def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device)
-    data = get_bpd_ood(args, model, device)
+    data = get_bpd_ood(args, model, device, save_dir='outputs/bpd_5_bits')
     print(data)
 
 

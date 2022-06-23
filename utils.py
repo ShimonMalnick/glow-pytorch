@@ -117,8 +117,8 @@ def compute_bpd(n_bins, img_size, model, device, data_loader):
     - add to the log likelihood the dequantization term -Mlog(a), where M=num_pixels, a = 1/n_bins
     - divide by log(2) for change base of the log used in the nll
     - divide by num_pixels
-    n_bins will be added later on, currently supports only 8 bits (n_bins = 256).
     :param n_bins: number of bins the data is quantized into.
+    :param data_loader: data loader for the data. the data is expected to be qunatized to n_bins.
     :return: bits per dimension
     """
     nll = 0.0
@@ -132,5 +132,5 @@ def compute_bpd(n_bins, img_size, model, device, data_loader):
         total_images += x.shape[0]
     nll /= total_images
     M = img_size * img_size * 3
-    bpd = (nll + (M * math.log(256))) / (math.log(2) * M)
+    bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
     return bpd
