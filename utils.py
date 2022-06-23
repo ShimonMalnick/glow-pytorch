@@ -1,4 +1,7 @@
+import math
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+
+import torch
 from easydict import EasyDict
 import json
 import random
@@ -105,3 +108,29 @@ def sample_data(data_root_path, batch_size, image_size, num_workers=8):
             loader = get_dataloader(data_root_path, batch_size, image_size, num_workers, dataset=dataset)
             loader = iter(loader)
             yield next(loader)
+
+
+def compute_bpd(n_bins, img_size, model, device, data_loader):
+    """
+    Computation of bits per dimension as done in Glow, meaning we:
+    - compute the negative log likelihood of the data
+    - add to the log likelihood the dequantization term -Mlog(a), where M=num_pixels, a = 1/n_bins
+    - divide by log(2) for change base of the log used in the nll
+    - divide by num_pixels
+    n_bins will be added later on, currently supports only 8 bits (n_bins = 256).
+    :param n_bins: number of bins the data is quantized into.
+    :return: bits per dimension
+    """
+    nll = 0.0
+    total_images = 0
+    for batch in data_loader:
+        x, _ = batch
+        x = x.to(device)
+        with torch.no_grad():
+            log_p, logdet, _ = model(x)
+        nll -= torch.sum(log_p + logdet).item()
+        total_images += x.shape[0]
+    nll /= total_images
+    M = img_size * img_size * 3
+    bpd = (nll + (M * math.log(256))) / (math.log(2) * M)
+    return bpd
