@@ -1,3 +1,4 @@
+import math
 import os
 from glob import glob
 from typing import List, Tuple
@@ -5,6 +6,8 @@ from PIL import Image, ImageFont, ImageDraw
 import imageio
 import matplotlib.pyplot as plt
 import torch
+from torchvision.datasets import ImageFolder
+from torch.utils.data import DataLoader, Dataset
 from utils import get_args
 from torchvision import utils
 from torchvision.transforms import ToTensor, Resize, Compose
@@ -197,12 +200,119 @@ def produce_partial_latents_images(input_im_path, args, model, device, save_dir=
         sample_from_model(z_list, model, f'{save_dir}/erase_{i}{suffix}.png', reconstruct=True)
 
 
+def grayscale_2_rgb(img_tensor):
+    if img_tensor.shape[0] == 1:
+        img_tensor = torch.cat([img_tensor, img_tensor, img_tensor], dim=0)
+
+    return img_tensor
+
+
+class PathsDataset(Dataset):
+    def __init__(self, paths, transform=None):
+        self.paths = paths
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        img = Image.open(self.paths[idx])
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        if self.transform:
+            img = self.transform(img)
+        return img, 0
+
+
+class RandomDataset(Dataset):
+    def __init__(self, img_size, num_images, transform=None, uniform=False):
+        self.img_size = img_size
+        self.num_images = num_images
+        self.transform = transform
+        self.uniform = uniform
+
+    def __len__(self):
+        return self.num_images
+
+    def __getitem__(self, idx):
+        if self.uniform:
+            img = torch.rand(*self.img_size)
+        else:
+            img = torch.randn(*self.img_size)
+
+        if self.transform:
+            img = self.transform(img)
+        return img, 0
+
+
+def get_bpd_of_images(args, model, device, paths=None, **kwargs):
+    to_tensor = Compose([Resize((args.img_size, args.img_size)), ToTensor(), lambda tens: tens - 0.5])
+    if 'random' in kwargs:
+        scale = 0.5 if not 'scale' in kwargs else kwargs['scale']
+        n = kwargs['random']
+        dset = RandomDataset((3, args.img_size, args.img_size), n, lambda tens: tens * scale)
+    elif 'uniform' in kwargs:
+        n = kwargs['uniform']
+        dset = RandomDataset((3, args.img_size, args.img_size), n, transform=lambda tens: tens - 0.5, uniform=True)
+    else:
+        dset = PathsDataset(paths, transform=to_tensor)
+        n = len(paths)
+    dl = DataLoader(dset, batch_size=args.batch, shuffle=False, num_workers=args.num_workers, drop_last=False)
+    nll = 0.0
+    for batch in dl:
+        x, _ = batch
+        x = x.to(device)
+        with torch.no_grad():
+            log_p, logdet, _ = model(x)
+        nll -= torch.sum(log_p + logdet).item()
+    nll /= n
+    M = args.img_size * args.img_size * 3
+    bpd = (nll + (M * math.log(256))) / (math.log(2) * M)
+    return bpd
+
+
+def get_bpd_ood(args, model, device):
+    ds_root = '/home/yandex/AMNLP2021/malnick/datasets'
+    roots = [ds_root + '/ffhq_256_samples', ds_root + '/cars_train', ds_root + '/chest_xrays/images',
+             ds_root + '/celebA/celeba/img_align_celeba']
+    num_images = 512
+    types = ('*.png', '*.jpg', '*.jpeg')
+    paths = []
+    for i, root in enumerate(roots):
+        cur_paths = []
+        for type in types:
+            cur_paths += glob(root + '/' + type)
+        cur_paths = cur_paths[:num_images]
+        paths.append(cur_paths)
+    labels = ['ffhq', 'cars', 'chest_xrays', 'celebA']
+    save_dir = 'outputs/nll'
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    data = {}
+    for i in range(len(paths)):
+        cur_bpd = get_bpd_of_images(args, model, device, paths[i])
+        print(f'BPD of {labels[i]}: {cur_bpd}')
+        data[labels[i]] = cur_bpd
+
+    for scale in [0.1 * i for i in range(1, 11)]:
+        cur_bpd = get_bpd_of_images(args, model, device, random=num_images, scale=scale)
+        print(f'BPD of random with scale {scale}: {cur_bpd}')
+        data[f'random_{scale}'] = cur_bpd
+    uni_bpd = get_bpd_of_images(args, model, device, uniform=num_images)
+    print(f'BPD of uniform: {uni_bpd}')
+    data['uniform'] = uni_bpd
+    with open(f'{save_dir}/bpd_ood.json', 'w') as f:
+        json.dump(data, f, indent=4)
+
+    return data
+
+
 def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device)
-    input_image = 'outputs/partial_latents/input.png'
-    produce_partial_latents_images(input_image, args, model, device, change_last=True)
+    data = get_bpd_ood(args, model, device)
+    print(data)
 
 
 if __name__ == '__main__':
