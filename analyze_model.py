@@ -1,4 +1,3 @@
-import math
 import os
 from glob import glob
 from typing import List, Tuple
@@ -6,24 +5,15 @@ from PIL import Image, ImageFont, ImageDraw
 import imageio
 import matplotlib.pyplot as plt
 import torch
-from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader, Dataset
-from utils import get_args, compute_bpd
+from utils import get_args, compute_bpd, load_model, quantize_image
 from torchvision import utils
 from torchvision.transforms import ToTensor, Resize, Compose
 from model import Glow
 from train import calc_z_shapes
 import json
 import numpy as np
-
-
-def load_model(args, device):
-    model_single = Glow(3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu)
-    model = torch.nn.DataParallel(model_single)
-    model.load_state_dict(torch.load(args.ckpt_path, map_location=lambda storage, loc: storage))
-    model.to(device)
-
-    return model_single
+from fixed_model import get_fixed_model
 
 
 def get_z(args, device) -> List:
@@ -97,9 +87,9 @@ def create_video_with_labels(out_path, paths, labels, fps=2, codec='libx264', bi
     video.close()
 
 
-def get_logprob_stats(paths, model, device) -> Tuple[np.ndarray, np.ndarray]:
-    logprobs_total, logprobs_last = [], []
-    img_to_tensor = ToTensor()
+def get_logprob_stats(paths, model, device, **kwargs) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    logprobs_total, logprobs_last, logprobs_logdet = [], [], []
+    img_transform = Compose([ToTensor(), lambda img: img - 0.5])
     normal_dist = torch.distributions.Normal(torch.tensor([0.0], device=device), torch.tensor([1.0], device=device))
     for path in paths:
         img = Image.open(path)
@@ -107,45 +97,53 @@ def get_logprob_stats(paths, model, device) -> Tuple[np.ndarray, np.ndarray]:
             img = img.resize((128, 128))
         if img.mode != 'RGB':
             img = img.convert('RGB')
-        tensor = img_to_tensor(img).unsqueeze(0).to(device)
+        tensor = img_transform(img).unsqueeze(0).to(device)
         with torch.no_grad():
-            log_p, _, cur_z = model(tensor)
+            log_p, logdet, cur_z = model(tensor)
         logprobs_total.append(log_p)
         logprobs_last.append(torch.sum(normal_dist.log_prob(cur_z[-1]).view(1, -1), dim=1))
-    return torch.cat(logprobs_total).cpu().numpy(), torch.cat(logprobs_last).cpu().numpy()
+        logprobs_logdet.append(log_p + logdet)
+    return torch.cat(logprobs_total).cpu().numpy(), torch.cat(logprobs_last).cpu().numpy(), torch.cat(logprobs_logdet).cpu().numpy()
 
 
-def plot_logprobs(roots, model, device, labels, save_dir, num_images=500):
-    if not all(os.path.isfile(f'{save_dir}/{label}_{suf}_logprobs.npy') for label in labels for suf in ['total', 'last']):
+def plot_logprobs(roots, model, device, labels, save_dir, num_images=500, rand_scale=0.2, **kwargs):
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    if not all(os.path.isfile(f'{save_dir}/{label}_{suf}_logprobs.npy') for label in labels for suf in ['total', 'last', 'logdet']):
         print(f"Computing logprobs...")
         types = ('*.png', '*.jpg', '*.jpeg')
-        all_total_logprobs, all_last_logprobs = [], []
+        all_total_logprobs, all_last_logprobs, all_logdet_logprobs = [], [], []
         for i, root in enumerate(roots):
             paths = []
             for type in types:
                 paths += glob(root + '/' + type)
             paths = paths[:num_images]
-            total_logprobs, last_logprobs = get_logprob_stats(paths, model, device)
+            total_logprobs, last_logprobs, logdet_logprobs = get_logprob_stats(paths, model, device, **kwargs)
             print("Finished " + labels[i], flush=True)
             np.save(f"{save_dir}/{labels[i]}_total_logprobs.npy", total_logprobs)
             np.save(f"{save_dir}/{labels[i]}_last_logprobs.npy", last_logprobs)
+            np.save(f"{save_dir}/{labels[i]}_logdet_logprobs.npy", logdet_logprobs)
             all_total_logprobs.append(total_logprobs)
             all_last_logprobs.append(last_logprobs)
-        rand_total, rand_last = get_rand_images_logprob(model, device, save_dir, num_images)
+            all_logdet_logprobs.append(logdet_logprobs)
+        rand_total, rand_last, rand_logprob = get_rand_images_logprob(model, device, save_dir, num_images, scale=rand_scale)
         all_total_logprobs.append(rand_total)
         all_last_logprobs.append(rand_last)
+        all_logdet_logprobs.append(rand_logprob)
         print("Finished All successfully")
     else:
         print("Loading logprobs...")
-        all_total_logprobs, all_last_logprobs = [], []
+        all_total_logprobs, all_last_logprobs, all_logdet_logprobs = [], [], []
         for label in labels:
             cur_total = np.load(f"{save_dir}/{label}_total_logprobs.npy")
             cur_last = np.load(f"{save_dir}/{label}_last_logprobs.npy")
+            cur_logdet = np.load(f"{save_dir}/{label}_logdet_logprobs.npy")
             all_total_logprobs.append(cur_total)
             all_last_logprobs.append(cur_last)
+            all_logdet_logprobs.append(cur_logdet)
     print("Plotting")
-    scale = 10 ** -5
-    for prob, logprob_arr in [('total', all_total_logprobs), ('last', all_last_logprobs)]:
+    scale = kwargs.get('scale', 1.0)
+    for prob, logprob_arr in [('total', all_total_logprobs), ('last', all_last_logprobs), ('logdet', all_logdet_logprobs)]:
         plt.figure()
         logprob_arr = [arr * scale for arr in logprob_arr]
         min_bin = min([np.min(logprobs) for logprobs in logprob_arr])
@@ -161,29 +159,39 @@ def plot_logprobs(roots, model, device, labels, save_dir, num_images=500):
                                'median': str(np.median(logprob_arr[i])), 'var': str(np.var(logprob_arr[i]))}
         plt.legend(loc='upper right')
         plt.ylabel('Count [Normalized]')
+        if kwargs.get('log', False):
+            plt.xscale('log')
         plt.xlabel(f'Logprob X {scale}')
         plt.title(f'{prob} layers Logprobs'.title())
-        plt.savefig(f"{save_dir}/{prob}_logprobs.png")
+        suff = "_log" if kwargs.get('log', False) else ""
+        suff += f"_scale_{scale}" if scale != 1.0 else ""
+        plt.savefig(f"{save_dir}/{prob}_logprobs{suff}.png")
         with open(f"{save_dir}/{prob}_logprobs.json", 'w') as f:
             data['scale'] = scale
+            data['rand_scale'] = rand_scale
+            data['log_scale'] = kwargs.get('log', False)
             json.dump(data, f, indent=4)
         plt.close()
 
 
-def get_rand_images_logprob(model, device, save_dir, num_images=500)-> Tuple[np.ndarray, np.ndarray]:
-    images = torch.randn(num_images, 3, 128, 128, device=device)
-    total_logprobs, last_logprobs = [], []
+def get_rand_images_logprob(model, device, save_dir, num_images=500, scale=0.2) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    images = torch.clamp(torch.randn(num_images, 3, 128, 128, device=device) * scale, -0.5, 0.5)
+    total_logprobs, last_logprobs, logdet_logprobs = [], [], []
     normal_dist = torch.distributions.Normal(torch.tensor([0.0], device=device), torch.tensor([1.0], device=device))
 
     for i in range(num_images):
         with torch.no_grad():
-            log_p, _, cur_z = model(images[i].unsqueeze(0))
+            log_p, logdet, cur_z = model(images[i].unsqueeze(0))
         total_logprobs.append(log_p)
         last_logprobs.append(torch.sum(normal_dist.log_prob(cur_z[-1]).view(1, -1), dim=1))
-    np_total, np_last = torch.cat(total_logprobs).cpu().numpy(), torch.cat(last_logprobs).cpu().numpy()
+        logdet_logprobs.append(log_p + logdet)
+    np_total = torch.cat(total_logprobs).cpu().numpy()
+    np_last = torch.cat(last_logprobs).cpu().numpy()
+    np_logdet = torch.cat(logdet_logprobs).cpu().numpy()
     np.save(f"{save_dir}/random_total_logprobs.npy", np_total)
     np.save(f"{save_dir}/random_last_logprobs.npy", np_last)
-    return np_total, np_last
+    np.save(f"{save_dir}/random_logdet_logprobs.npy", np_logdet)
+    return np_total, np_last, np_logdet
 
 
 def produce_partial_latents_images(input_im_path, args, model, device, save_dir='outputs/partial_latents', change_last=False):
@@ -225,11 +233,12 @@ class PathsDataset(Dataset):
 
 
 class RandomDataset(Dataset):
-    def __init__(self, img_size, num_images, transform=None, uniform=False):
+    def __init__(self, img_size, num_images, transform=None, uniform=False, clip=False):
         self.img_size = img_size
         self.num_images = num_images
         self.transform = transform
         self.uniform = uniform
+        self.clip = clip
 
     def __len__(self):
         return self.num_images
@@ -242,18 +251,10 @@ class RandomDataset(Dataset):
 
         if self.transform:
             img = self.transform(img)
+
+        if self.clip:
+            img = torch.clamp(img, -0.5, 0.5)
         return img, 0
-
-
-def quantize_image(img, n_bits):
-    """
-    assuming the input is in [0, 1] of 8 bit images for each channel
-    """
-    if n_bits < 8:
-        img = img * 255
-        img = torch.floor(img / (2 ** (8 - n_bits)))
-        img /= (2 ** n_bits)
-    return img - 0.5
 
 
 def get_bpd_of_images(args, model, device, paths=None, **kwargs):
@@ -311,9 +312,14 @@ def get_bpd_ood(args, model, device, save_dir='outputs/nll'):
 def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(args, device)
-    data = get_bpd_ood(args, model, device, save_dir='outputs/bpd_5_bits')
-    print(data)
+    model: Glow = load_model(args, device)
+    model = get_fixed_model(model)
+    ds_root = '/home/yandex/AMNLP2021/malnick/datasets'
+    roots = [ds_root + '/ffhq_256_samples', ds_root + '/cars_train', ds_root + '/chest_xrays/images',
+             ds_root + '/celebA/celeba/img_align_celeba']
+    labels = ['ffhq', 'cars', 'chest_xrays', 'celebA', 'random']
+    save_dir = 'outputs/ood_logprob_quantized'
+    plot_logprobs(roots, model, device, labels, save_dir, log=False, scale=1.0, qunatize=True)
 
 
 if __name__ == '__main__':

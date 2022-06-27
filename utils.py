@@ -1,6 +1,8 @@
 import math
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from typing import Union
 
+from model import Glow
 import torch
 from easydict import EasyDict
 import json
@@ -43,6 +45,10 @@ def get_args() -> EasyDict:
     parser.add_argument('--num_workers', help='Number of worker threads for dataloader', type=int)
     parser.add_argument('--config', help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', help='number of gpu devices to use', type=int)
+    parser.add_argument('--forget_path', help='path to forget dataset root')
+    parser.add_argument('--forget_size', help='Number of images to forget', type=int)
+    parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
+    parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -95,9 +101,10 @@ def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, datase
     return DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=num_workers)
 
 
-def sample_data(data_root_path, batch_size, image_size, num_workers=8):
-    dataset = get_dataset(data_root_path, image_size)
-    loader = get_dataloader(data_root_path, batch_size, image_size, num_workers)
+def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=None):
+    if dataset is None:
+        dataset = get_dataset(data_root_path, image_size)
+    loader = get_dataloader(data_root_path, batch_size, image_size, num_workers, dataset=dataset)
     loader = iter(loader)
 
     while True:
@@ -134,3 +141,25 @@ def compute_bpd(n_bins, img_size, model, device, data_loader):
     M = img_size * img_size * 3
     bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
     return bpd
+
+
+def load_model(args, device, training=False) -> Union[Glow, torch.nn.DataParallel]:
+    model_single = Glow(3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu)
+    model = torch.nn.DataParallel(model_single)
+    model.load_state_dict(torch.load(args.ckpt_path, map_location=lambda storage, loc: storage))
+    model.to(device)
+    if training:
+        return model
+    else:
+        return model_single
+
+
+def quantize_image(img, n_bits):
+    """
+    assuming the input is in [0, 1] of 8 bit images for each channel
+    """
+    if n_bits < 8:
+        img = img * 255
+        img = torch.floor(img / (2 ** (8 - n_bits)))
+        img /= (2 ** n_bits)
+    return img - 0.5
