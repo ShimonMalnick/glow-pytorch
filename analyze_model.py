@@ -6,7 +6,7 @@ import imageio
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader, Dataset
-from utils import get_args, compute_bpd, load_model, quantize_image
+from utils import get_args, compute_bpd, load_model, quantize_image, save_dict_as_json, json_2_bar_plot, get_dataset
 from torchvision import utils
 from torchvision.transforms import ToTensor, Resize, Compose
 from model import Glow
@@ -25,7 +25,7 @@ def get_z(args, device) -> List:
     return z_sample
 
 
-def sample_from_model(z_samples, model, out_name='samples.png', reconstruct=True):
+def sample_from_model(z_samples, model, out_name='samples.png', reconstruct=True, return_tensors=False):
     with torch.no_grad():
         cur_tensors = model.reverse(z_samples, reconstruct=reconstruct).cpu()
         utils.save_image(
@@ -35,6 +35,8 @@ def sample_from_model(z_samples, model, out_name='samples.png', reconstruct=True
             nrow=10,
             range=(-0.5, 0.5),
         )
+    if return_tensors:
+        return cur_tensors.detach()
 
 
 def sample_different_temp(args, device):
@@ -194,18 +196,26 @@ def get_rand_images_logprob(model, device, save_dir, num_images=500, scale=0.2) 
     return np_total, np_last, np_logdet
 
 
-def produce_partial_latents_images(input_im_path, args, model, device, save_dir='outputs/partial_latents', change_last=False):
-    to_tens = Compose([Resize(args.img_size), ToTensor()])
-    img = to_tens(Image.open(input_im_path)).to(device).unsqueeze(0) - 0.5
+def produce_partial_latents_images(input_images: List[str], args, model, device, save_dir='outputs/partial_latents', change_last=False, diff_factor=1.0):
+    to_tens = Compose([Resize((args.img_size, args.img_size)), ToTensor(), lambda tens: tens - 0.5])
+    images = [to_tens(Image.open(im)) for im in input_images]
+    inputs = torch.stack(images).to(device)
     with torch.no_grad():
-        _, _, z_list = model(img)
+        _, _, z_list = model(inputs)
     suffix = '_changed' if change_last else ''
     if change_last:
         z_list[-1] = torch.randn_like(z_list[-1])
-    sample_from_model(z_list, model, f'{save_dir}/no_erase{suffix}.png', reconstruct=True)
-    for i in range(len(z_list) - 1):
+    original_tensors = sample_from_model(z_list, model, f'{save_dir}/no_erase{suffix}.png', reconstruct=True, return_tensors=True)
+    for i in range(len(z_list)):
         z_list[i].zero_()
-        sample_from_model(z_list, model, f'{save_dir}/erase_{i}{suffix}.png', reconstruct=True)
+        cur_tensors = sample_from_model(z_list, model, f'{save_dir}/erase_{i}{suffix}.png', reconstruct=True, return_tensors=True)
+        cur_diff = torch.clamp(torch.abs(cur_tensors - original_tensors) * diff_factor, 0.0, 1.0)
+        utils.save_image(
+            cur_diff,
+            f'{save_dir}/diff_{i}{suffix}_factor_{diff_factor}.png',
+            normalize=False,
+            nrow=10
+        )
 
 
 def grayscale_2_rgb(img_tensor):
@@ -248,12 +258,11 @@ class RandomDataset(Dataset):
             img = torch.rand(*self.img_size)
         else:
             img = torch.randn(*self.img_size)
-
         if self.transform:
             img = self.transform(img)
-
         if self.clip:
             img = torch.clamp(img, -0.5, 0.5)
+
         return img, 0
 
 
@@ -262,10 +271,10 @@ def get_bpd_of_images(args, model, device, paths=None, **kwargs):
     if 'random' in kwargs:
         scale = 0.5 if not 'scale' in kwargs else kwargs['scale']
         n = kwargs['random']
-        dset = RandomDataset((3, args.img_size, args.img_size), n, lambda tens: tens * scale)
+        dset = RandomDataset((3, args.img_size, args.img_size), n, lambda tens: tens * scale, clip=True)
     elif 'uniform' in kwargs:
         n = kwargs['uniform']
-        dset = RandomDataset((3, args.img_size, args.img_size), n, transform=lambda tens: tens - 0.5, uniform=True)
+        dset = RandomDataset((3, args.img_size, args.img_size), n, transform=lambda tens: quantize_image(tens, args.n_bits), uniform=True)
     else:
         dset = PathsDataset(paths, transform=to_tensor)
         n = len(paths)
@@ -313,13 +322,14 @@ def main():
     args = get_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model: Glow = load_model(args, device)
-    model = get_fixed_model(model)
-    ds_root = '/home/yandex/AMNLP2021/malnick/datasets'
-    roots = [ds_root + '/ffhq_256_samples', ds_root + '/cars_train', ds_root + '/chest_xrays/images',
-             ds_root + '/celebA/celeba/img_align_celeba']
-    labels = ['ffhq', 'cars', 'chest_xrays', 'celebA', 'random']
-    save_dir = 'outputs/ood_logprob_quantized'
-    plot_logprobs(roots, model, device, labels, save_dir, log=False, scale=1.0, qunatize=True)
+    # model = get_fixed_model(model)
+    save_dir = 'outputs/bpd_5_bits_corrected'
+    os.makedirs(save_dir, exist_ok=True)
+    # save_dict_as_json(args, f'{save_dir}/args.json')
+    # get_bpd_ood(args, model, device, save_dir)
+    json_2_bar_plot(f'{save_dir}/bpd_ood.json', f'{save_dir}/bpd_ood.png', title='bits per dimension of different datasets'.title())
+
+
 
 
 if __name__ == '__main__':

@@ -1,0 +1,19 @@
+{
+    "batch": 32,
+    "iter":  100000,
+    "n_flow": 32,
+    "n_block": 4,
+    "no_lu": false,
+    "affine":  false,
+    "n_bits": 5,
+    "lr": 1e-4,
+    "img_size": 128,
+    "temp": 0.7,
+    "n_sample": 20,
+    "ckpt_path": "outputs/best_model/checkpoint/model_520001.pt",
+    "path": "celeba",
+    "data_split": "train",
+    "exp_name": "continue_celeba",
+    "num_workers": 8,
+    "devices": -1
+}

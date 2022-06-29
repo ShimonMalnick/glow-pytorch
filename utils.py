@@ -2,6 +2,8 @@ import math
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from typing import Union
 
+from matplotlib import pyplot as plt
+
 from model import Glow
 import torch
 from easydict import EasyDict
@@ -36,7 +38,7 @@ def get_args() -> EasyDict:
     parser.add_argument("--n_sample", help="number of samples", type=int)
     parser.add_argument("--ckpt_path", help='Path to checkpoint for model')
     parser.add_argument("--opt_path", help='Path to checkpoint for optimizer')
-    celeba_path = '/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba'
+    celeba_path = '/home/yandex/AMNLP2021/malnick/datasets/celebA'
     ffhq_path = '/home/yandex/AMNLP2021/malnick/datasets/ffhq-128'
     parser.add_argument("--path", metavar="PATH", help="Path to image directory")
     parser.add_argument('--eval', action='store_true', help='Use for evaluating a model', default=None)
@@ -49,6 +51,7 @@ def get_args() -> EasyDict:
     parser.add_argument('--forget_size', help='Number of images to forget', type=int)
     parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
     parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
+    parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -83,16 +86,21 @@ def save_dict_as_json(save_dict, save_path):
         json.dump(save_dict, out_j, indent=4)
 
 
-def get_dataset(data_root_path, image_size):
+def get_dataset(data_root_path, image_size, **kwargs):
     transform = transforms.Compose(
         [
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
+            transforms.Resize((image_size, image_size)),
+            # transforms.CenterCrop(image_size),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
         ]
     )
-    return datasets.ImageFolder(data_root_path, transform=transform)
+    if 'celeba' in data_root_path.lower():
+        split = 'all' if not 'split' in kwargs else kwargs['split']
+        ds = datasets.CelebA(data_root_path, split, transform=transform, download=False, target_type='identity')
+    else:
+        ds = datasets.ImageFolder(data_root_path, transform=transform)
+    return ds
 
 
 def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, dataset=None) -> DataLoader:
@@ -101,9 +109,9 @@ def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, datase
     return DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=num_workers)
 
 
-def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=None):
+def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=None, **kwargs):
     if dataset is None:
-        dataset = get_dataset(data_root_path, image_size)
+        dataset = get_dataset(data_root_path, image_size, **kwargs)
     loader = get_dataloader(data_root_path, batch_size, image_size, num_workers, dataset=dataset)
     loader = iter(loader)
 
@@ -163,3 +171,46 @@ def quantize_image(img, n_bits):
         img = torch.floor(img / (2 ** (8 - n_bits)))
         img /= (2 ** n_bits)
     return img - 0.5
+
+
+def json_2_bar_plot(json_path, out_path, **kwargs):
+    with open(json_path, 'r') as in_j:
+        data = json.load(in_j)
+
+    # Figure Size
+    fig, ax = plt.subplots(figsize=(16, 9))
+
+    # Horizontal Bar Plot
+    ax.barh(list(data.keys()), list(data.values()))
+
+    # Remove axes splines
+    for s in ['top', 'bottom', 'left', 'right']:
+        ax.spines[s].set_visible(False)
+
+    # Remove x, y Ticks
+    ax.xaxis.set_ticks_position('none')
+    ax.yaxis.set_ticks_position('none')
+
+    # Add padding between axes and labels
+    ax.xaxis.set_tick_params(pad=5)
+    ax.yaxis.set_tick_params(pad=10)
+
+    # Add x, y gridlines
+    ax.grid(b=True, color='grey',
+            linestyle='-.', linewidth=0.5,
+            alpha=0.2)
+
+    # Show top values
+    ax.invert_yaxis()
+
+    # Add annotation to bars
+    for i in ax.patches:
+        plt.text(i.get_width() + 0.2, i.get_y() + 0.5,
+                 str(round((i.get_width()), 2)),
+                 fontsize=10, fontweight='bold',
+                 color='grey')
+    if 'title' in kwargs:
+        # Add Plot Title
+        ax.set_title(kwargs['title'], loc='left')
+    plt.savefig(out_path)
+    plt.close()

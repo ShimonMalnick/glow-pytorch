@@ -7,6 +7,7 @@ from torchvision import utils
 from model import Glow
 from utils import sample_data
 from typing import List, Tuple
+from time import time
 
 
 def calc_z_shapes(n_channel, input_size, n_flow, n_block) -> List[Tuple]:
@@ -60,7 +61,7 @@ def train(args, model, optimizer):
     for z in z_shapes:
         z_new = torch.randn(args.n_sample, *z) * args.temp
         z_sample.append(z_new.to(device))
-
+    cur = time()
     with tqdm(range(args.iter)) as pbar:
         for i in pbar:
             image, _ = next(dataset)
@@ -95,10 +96,11 @@ def train(args, model, optimizer):
             optimizer.step()
 
             pbar.set_description(
-                f"Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; lr: {warmup_lr:.7f}"
+                f"iter: {i + 1};Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; lr: {warmup_lr:.7f}"
             )
 
             if i % 100 == 0:
+                print(f'Avg time after {i + 1} iterations: {(time() - cur) / (i + 1):.5f} seconds')
                 with torch.no_grad():
                     utils.save_image(
                         model_single.reverse(z_sample).cpu().data,
