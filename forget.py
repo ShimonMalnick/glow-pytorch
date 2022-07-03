@@ -1,8 +1,6 @@
 import json
 import os
-import subprocess
 from glob import glob
-
 from easydict import EasyDict
 from torchvision import transforms
 from model import Glow
@@ -26,6 +24,7 @@ def get_forget_dataset(args, additional_tranform=None, images_path=None) -> Data
     if images_path is None:
         images_path = args.forget_path
     initial_ds = ImageFolder(images_path, transform=transform)
+    assert args.forget_size <= len(initial_ds)
     ds = Subset(initial_ds, [i % args.forget_size for i in range(max(args.batch, args.forget_size))])
     return ds
 
@@ -152,7 +151,12 @@ def evaluate_model(args=None, save_dir='outputs/forget_bpd'):
     if args is None:
         args = get_args(forget=True)
     save_dir = os.path.join(save_dir, "bpd")
-    os.makedirs(save_dir)
+    if os.path.exists(f'{save_dir}/bpd.json'):
+        # os.remove(f'{save_dir}/bpd.json')
+        # print("removed")
+        print("Already evaluated Given folder")
+        return None
+    os.makedirs(save_dir, exist_ok=True)
     save_dict_as_json(args, f'{save_dir}/args.json')
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model: torch.nn.DataParallel = load_model(args, device, training=False)
@@ -160,13 +164,21 @@ def evaluate_model(args=None, save_dir='outputs/forget_bpd'):
 
     assert args.forget_path and args.forget_compare_path
     data = {}
-    runs = [('forget', args.forget_path), ('compare', args.forget_compare_path)]
-    for run, param in runs:
-        cur_ds = get_forget_dataset(args, param)
-        cur_dl = DataLoader(cur_ds, batch_size=args.batch, shuffle=False, num_workers=args.num_workers)
-        cur_bpd = compute_bpd(n_bins, args.img_size, model, device, cur_dl)
-        print(f'{run} bpd: {cur_bpd}')
-        data[run] = cur_bpd
+
+    forget_ds = get_forget_dataset(args, images_path=args.forget_path)
+    forget_dl = DataLoader(forget_ds, batch_size=args.batch, shuffle=False, num_workers=args.num_workers)
+    forget_bpd = compute_bpd(n_bins, args.img_size, model, device, forget_dl)
+    print(f'Forget BPD: {forget_bpd:.5f}')
+    data['forget'] = forget_bpd
+
+    forget_max_size = len(os.listdir(args.forget_compare_path))
+    # evaluating against all compared images
+    args.forget_size = forget_max_size
+    compare_ds = get_forget_dataset(args, images_path=args.forget_compare_path)
+    compare_dl = DataLoader(compare_ds, batch_size=args.batch, shuffle=False, num_workers=args.num_workers)
+    compare_bpd = compute_bpd(n_bins, args.img_size, model, device, compare_dl)
+    print(f'Compare BPD: {compare_bpd:.5f}')
+    data['compare'] = compare_bpd
     save_dict_as_json(data, f'{save_dir}/bpd.json')
 
 
