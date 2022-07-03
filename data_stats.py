@@ -61,7 +61,7 @@ def save_images_chosen_identities(ids: List[int], save_dir: str):
     ds = get_dataset('/home/yandex/AMNLP2021/malnick/datasets/celebA', 128, split='train')
     all_identities = torch.load(os.path.join('outputs/celeba_stats', 'identities.pt'))
     for identity in ids:
-        cur_dir = os.path.join(save_dir, str(identity))
+        cur_dir = os.path.join(save_dir, str(identity), "images")  # images added just to use ImageFolder dataset
         os.makedirs(cur_dir, exist_ok=True)
         ids_tensors = (all_identities == identity).nonzero(as_tuple=True)[0]
         print(ids_tensors.shape)
@@ -74,4 +74,3 @@ def save_images_chosen_identities(ids: List[int], save_dir: str):
 if __name__ == '__main__':
     save_dir = '/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/train_set_frequent_identities'
     save_images_chosen_identities(ids=[4], save_dir=save_dir)
-    # get_celeba_stats()

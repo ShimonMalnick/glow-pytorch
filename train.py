@@ -1,6 +1,7 @@
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from math import log, sqrt, pi
-from utils import get_args, save_dict_as_json, make_exp_dir
+from utils import get_args, save_dict_as_json, make_exp_dir, save_model_optimizer, get_dataloader
 import torch
 from torch import nn, optim
 from torchvision import utils
@@ -52,7 +53,7 @@ def calc_loss_changed(log_p, logdet, image_size, n_bins):
 
 
 def train(args, model, optimizer):
-    dataset = iter(sample_data(args.path, args.batch, args.img_size))
+    dataset = iter(sample_data(args.path, args.batch, args.img_size, data_split=args.data_split))
     print("Loaded Dataset", flush=True)
     n_bins = 2.0 ** args.n_bits
 
@@ -111,12 +112,7 @@ def train(args, model, optimizer):
                     )
 
             if i % 10000 == 0:
-                torch.save(
-                    model.state_dict(), f'experiments/{args.exp_name}/checkpoints/model_{str(i + 1).zfill(6)}.pt'
-                )
-                torch.save(
-                    optimizer.state_dict(), f'experiments/{args.exp_name}/checkpoints/optim_{str(i + 1).zfill(6)}.pt'
-                )
+                save_model_optimizer(args, i, model, optimizer)
 
 
 def evaluate(args, eval_model):

@@ -10,9 +10,8 @@
     "img_size": 128,
     "temp": null,
     "n_sample": null,
-    "path": "celeba",
-    "data_split": "all",
-    "exp_name": "forget_w_noise_1_image",
+    "path": null,
+    "exp_name": "forget_baseline_w_noise_1_image",
     "num_workers": 8,
     "devices": -1,
     "ckpt_path": "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/experiments/continue_celeba/checkpoints/model_050001.pt",
@@ -21,8 +20,8 @@
     "sample_name": null,
     "forget_path": "/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/train_set_frequent_identities/1",
     "forget_size": 1,
-    "forget_every": 3,
+    "forget_every": null,
     "save_every": 5,
-    "forget_baseline": false,
+    "forget_baseline": true,
     "forget_noise": 0.1
 }

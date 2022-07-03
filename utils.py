@@ -10,11 +10,12 @@ from easydict import EasyDict
 import json
 import random
 import os
-from torchvision import datasets, transforms
+import torchvision.datasets as vision_datasets
+from torchvision import transforms
 from torch.utils.data import DataLoader
 
 
-def get_args() -> EasyDict:
+def get_args(**kwargs) -> EasyDict:
     parser = ArgumentParser(description="Glow trainer", formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument("--batch", help="batch size", type=int)
     parser.add_argument("--iter", help="maximum iterations", type=int)
@@ -47,11 +48,18 @@ def get_args() -> EasyDict:
     parser.add_argument('--num_workers', help='Number of worker threads for dataloader', type=int)
     parser.add_argument('--config', help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', help='number of gpu devices to use', type=int)
-    parser.add_argument('--forget_path', help='path to forget dataset root')
-    parser.add_argument('--forget_size', help='Number of images to forget', type=int)
-    parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
-    parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
-    parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
+    if kwargs.get('forget', False):
+        parser.add_argument('--forget_path', help='path to forget dataset root')
+        parser.add_argument('--forget_size', help='Number of images to forget', type=int)
+        parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
+        parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
+        parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
+        parser.add_argument('--forget_noise', help='Noise added to images during the forgetting process. this parameter '
+                                                   'is the std of random noise added to the images', type=float)
+        parser.add_argument('--forget_baseline', help='Whehther running baseline forget experiment, meaning just'
+                                                      ' forgetting with no regularization', type=bool)
+        parser.add_argument('--forget_compare_path', help='Path to directory containing images from an identity '
+                                                          'we didn\'t forget, for evaluation purposes')
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -61,14 +69,15 @@ def get_args() -> EasyDict:
         out_dict.update(config_dict)
     args_dict = vars(args)
     for k in args_dict:
-        if args_dict[k] or k not in out_dict:
+        if args_dict[k] is not None or k not in out_dict:
             out_dict[k] = args_dict[k]
 
-    assert out_dict.path
-    if 'ffhq' in out_dict.path.lower():
-        out_dict.path = ffhq_path
-    elif 'celeba' in out_dict.path.lower():
-        out_dict.path = celeba_path
+    assert out_dict.get('forget_baseline', False) or out_dict.path
+    if out_dict.path:
+        if 'ffhq' in out_dict.path.lower():
+            out_dict.path = ffhq_path
+        elif 'celeba' in out_dict.path.lower():
+            out_dict.path = celeba_path
 
     return EasyDict(out_dict)
 
@@ -87,25 +96,28 @@ def save_dict_as_json(save_dict, save_path):
 
 
 def get_dataset(data_root_path, image_size, **kwargs):
-    transform = transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size)),
-            # transforms.CenterCrop(image_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-        ]
-    )
-    if 'celeba' in data_root_path.lower():
-        split = 'all' if not 'split' in kwargs else kwargs['split']
-        ds = datasets.CelebA(data_root_path, split, transform=transform, download=False, target_type='identity')
+    if 'transform' in kwargs:
+        transform = kwargs['transform']
     else:
-        ds = datasets.ImageFolder(data_root_path, transform=transform)
+        transform = transforms.Compose(
+            [
+                transforms.Resize((image_size, image_size)),
+                # transforms.CenterCrop(image_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor()])
+    if 'celeba' in data_root_path.lower():
+        split = 'all'
+        if 'data_split' in kwargs and kwargs['data_split']:
+            split = kwargs['data_split']
+        ds = vision_datasets.CelebA(data_root_path, split, transform=transform, download=False, target_type='identity')
+    else:
+        ds = vision_datasets.ImageFolder(data_root_path, transform=transform)
     return ds
 
 
-def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, dataset=None) -> DataLoader:
+def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, dataset=None, **kwargs) -> DataLoader:
     if dataset is None:
-        dataset = get_dataset(data_root_path, image_size)
+        dataset = get_dataset(data_root_path, image_size, **kwargs)
     return DataLoader(dataset, shuffle=True, batch_size=batch_size, num_workers=num_workers)
 
 
@@ -214,3 +226,12 @@ def json_2_bar_plot(json_path, out_path, **kwargs):
         ax.set_title(kwargs['title'], loc='left')
     plt.savefig(out_path)
     plt.close()
+
+
+def save_model_optimizer(args, iter_num, model, optimizer):
+    torch.save(
+        model.state_dict(), f'experiments/{args.exp_name}/checkpoints/model_{str(iter_num + 1).zfill(6)}.pt'
+    )
+    torch.save(
+        optimizer.state_dict(), f'experiments/{args.exp_name}/checkpoints/optim_{str(iter_num + 1).zfill(6)}.pt'
+    )

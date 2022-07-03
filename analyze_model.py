@@ -13,6 +13,7 @@ from model import Glow
 from train import calc_z_shapes
 import json
 import numpy as np
+from datasets import PathsDataset, RandomDataset
 from fixed_model import get_fixed_model
 
 
@@ -225,47 +226,6 @@ def grayscale_2_rgb(img_tensor):
     return img_tensor
 
 
-class PathsDataset(Dataset):
-    def __init__(self, paths, transform=None):
-        self.paths = paths
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.paths)
-
-    def __getitem__(self, idx):
-        img = Image.open(self.paths[idx])
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        if self.transform:
-            img = self.transform(img)
-        return img, 0
-
-
-class RandomDataset(Dataset):
-    def __init__(self, img_size, num_images, transform=None, uniform=False, clip=False):
-        self.img_size = img_size
-        self.num_images = num_images
-        self.transform = transform
-        self.uniform = uniform
-        self.clip = clip
-
-    def __len__(self):
-        return self.num_images
-
-    def __getitem__(self, idx):
-        if self.uniform:
-            img = torch.rand(*self.img_size)
-        else:
-            img = torch.randn(*self.img_size)
-        if self.transform:
-            img = self.transform(img)
-        if self.clip:
-            img = torch.clamp(img, -0.5, 0.5)
-
-        return img, 0
-
-
 def get_bpd_of_images(args, model, device, paths=None, **kwargs):
     to_tensor = Compose([Resize((args.img_size, args.img_size)), ToTensor(), lambda tens: quantize_image(tens, args.n_bits)])
     if 'random' in kwargs:
@@ -328,8 +288,6 @@ def main():
     # save_dict_as_json(args, f'{save_dir}/args.json')
     # get_bpd_ood(args, model, device, save_dir)
     json_2_bar_plot(f'{save_dir}/bpd_ood.json', f'{save_dir}/bpd_ood.png', title='bits per dimension of different datasets'.title())
-
-
 
 
 if __name__ == '__main__':
