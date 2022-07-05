@@ -237,12 +237,15 @@ def save_model_optimizer(args, iter_num, model, optimizer):
     )
 
 
-def gather_jsons(in_paths, keys_names, out_path):
+def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False):
     d = {}
     for p, key_name in zip(in_paths, keys_names):
         with open(p, 'r') as in_j:
             data = json.load(in_j)
-            d[key_name] = data
+        if add_duplicate_names and key_name in d:
+            key_name += '_addition'
+
+        d[key_name] = data
 
     with open(out_path, 'w') as out_j:
         json.dump(d, out_j, indent=4)
