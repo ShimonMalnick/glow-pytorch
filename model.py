@@ -246,12 +246,6 @@ def gaussian_log_p(x, mean, log_sd):
     return -0.5 * log(2 * pi) - log_sd - 0.5 * (x - mean) ** 2 / torch.exp(2 * log_sd)
 
 
-# this fix is added by me since the logp here (which is just as in glow) is inaccurate
-def gaussian_log_p_fixed(x, mean, log_sd):
-    dim = x[0].nelement()
-    return -0.5 * dim * log(2 * pi) - log_sd - 0.5 * (x - mean) ** 2 / torch.exp(2 * log_sd)
-
-
 def gaussian_sample(eps, mean, log_sd):
     return mean + torch.exp(log_sd) * eps
 
