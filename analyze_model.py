@@ -6,7 +6,7 @@ import imageio
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader, Dataset
-from utils import get_args, compute_bpd, load_model, quantize_image, save_dict_as_json, json_2_bar_plot, get_dataset
+from utils import get_args, compute_bpd, load_model, quantize_image, save_dict_as_json, create_horizontal_bar_plot, get_dataset
 from torchvision import utils
 from torchvision.transforms import ToTensor, Resize, Compose
 from model import Glow
@@ -287,7 +287,7 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
     # save_dict_as_json(args, f'{save_dir}/args.json')
     # get_bpd_ood(args, model, device, save_dir)
-    json_2_bar_plot(f'{save_dir}/bpd_ood.json', f'{save_dir}/bpd_ood.png', title='bits per dimension of different datasets'.title())
+    create_horizontal_bar_plot(f'{save_dir}/bpd_ood.json', f'{save_dir}/bpd_ood.png', title='bits per dimension of different datasets'.title())
 
 
 if __name__ == '__main__':

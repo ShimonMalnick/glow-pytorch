@@ -1,6 +1,6 @@
 import math
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
-from typing import Union
+from typing import Union, Dict, Type
 
 from matplotlib import pyplot as plt
 
@@ -185,9 +185,20 @@ def quantize_image(img, n_bits):
     return img - 0.5
 
 
-def json_2_bar_plot(json_path, out_path, **kwargs):
-    with open(json_path, 'r') as in_j:
-        data = json.load(in_j)
+def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs):
+    """
+    Given a data dictionary (or path to json containing the data), create a horizontal bar plot and save it
+    in out_path
+    :param data: data dictionary (or subclass of it), or path to json containing the data
+    :param out_path: path to save the plot
+    :param kwargs: 'title' can be passed as a string with the title
+    :return: None
+    """
+    if isinstance(data, str):
+        with open(data, 'r') as in_j:
+            data = json.load(in_j)
+    elif not isinstance(data, dict):
+        raise ValueError('data must be a dictionary or a path to a json file')
 
     # Figure Size
     fig, ax = plt.subplots(figsize=(16, 9))

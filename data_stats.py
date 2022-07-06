@@ -5,7 +5,7 @@ from torchvision.utils import save_image
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from utils import get_dataset
+from utils import get_dataset, create_horizontal_bar_plot
 from time import time
 import matplotlib.pyplot as plt
 
@@ -71,6 +71,29 @@ def save_images_chosen_identities(ids: List[int], save_dir: str):
             save_image(cur_img, os.path.join(cur_dir, str(i) + '.png'))
 
 
+def get_celeba_attributes_stats(attr_file_path: str='/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba/list_attr_celeba.txt'):
+    start_parse = time()
+    with open(attr_file_path, 'r') as f:
+        num_images = int(f.readline().strip())
+        attributes = f.readline().strip().split(' ')
+        attributes_dict = {attribute: 0 for attribute in attributes}
+        for i in range(num_images):
+            raw_attrs = f.readline().strip().split(' ')[1:]
+            raw_attrs = [r for r in raw_attrs if r]  # remove double spaces from original line
+            assert len(raw_attrs) == len(attributes)
+            for i in range(len(raw_attrs)):
+                if raw_attrs[i] == '1':
+                    attributes_dict[attributes[i]] += 1
+                elif raw_attrs[i] != '-1':
+                    raise ValueError("unexpected value: ", raw_attrs[i])
+    end_parse = time()
+    print("Parsing all attributes took: ", round(end_parse - start_parse, 2), " seconds")
+    create_horizontal_bar_plot(attributes_dict, 'outputs/celeba_attributes_stats.png',
+                               title='CelebA Binary Atrributes Count (out of {} images)'.format(num_images))
+    print("plotting took ", round(time() - end_parse, 2), " seconds")
+
+
 if __name__ == '__main__':
-    save_dir = '/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/train_set_frequent_identities'
-    save_images_chosen_identities(ids=[4], save_dir=save_dir)
+    # save_dir = '/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/train_set_frequent_identities'
+    # save_images_chosen_identities(ids=[4], save_dir=save_dir)
+    get_celeba_attributes_stats()
