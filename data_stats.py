@@ -8,6 +8,9 @@ from torch.utils.data import DataLoader
 from utils import get_dataset, create_horizontal_bar_plot
 from time import time
 import matplotlib.pyplot as plt
+from multiprocessing import Pool
+from collections import Counter
+from functools import reduce
 
 
 def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
@@ -71,21 +74,27 @@ def save_images_chosen_identities(ids: List[int], save_dir: str):
             save_image(cur_img, os.path.join(cur_dir, str(i) + '.png'))
 
 
+def parse_line(line):
+    line = line.split(' ')[1:]
+    line = [part for part in line if part]
+    return Counter({i: int(line[i]) for i in range(len(line)) if line[i] == '1'})
+
+
 def get_celeba_attributes_stats(attr_file_path: str='/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba/list_attr_celeba.txt'):
     start_parse = time()
     with open(attr_file_path, 'r') as f:
         num_images = int(f.readline().strip())
         attributes = f.readline().strip().split(' ')
         attributes_dict = {attribute: 0 for attribute in attributes}
+        attributes_map = {i: attribute for i, attribute in enumerate(attributes)}
+        lines = []
         for i in range(num_images):
-            raw_attrs = f.readline().strip().split(' ')[1:]
-            raw_attrs = [r for r in raw_attrs if r]  # remove double spaces from original line
-            assert len(raw_attrs) == len(attributes)
-            for i in range(len(raw_attrs)):
-                if raw_attrs[i] == '1':
-                    attributes_dict[attributes[i]] += 1
-                elif raw_attrs[i] != '-1':
-                    raise ValueError("unexpected value: ", raw_attrs[i])
+            lines.append(f.readline().strip())
+        with Pool(16) as p:
+            map_result = p.map(parse_line, lines)
+        reduced = reduce(lambda d1, d2: d1 + d2, map_result)
+        for k in reduced:
+            attributes_dict[attributes_map[k]] = reduced[k]
     end_parse = time()
     print("Parsing all attributes took: ", round(end_parse - start_parse, 2), " seconds")
     create_horizontal_bar_plot(attributes_dict, 'outputs/celeba_attributes_stats.png',
