@@ -11,6 +11,9 @@ import os
 import torchvision.datasets as vision_datasets
 from torchvision import transforms
 from torch.utils.data import DataLoader
+CELEBA_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/celebA'
+FFHQ_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/ffhq-128'
+CELEBA_NUM_IDENTITIES = 10177
 
 
 def get_args(**kwargs) -> EasyDict:
@@ -37,8 +40,6 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument("--n_sample", help="number of samples", type=int)
     parser.add_argument("--ckpt_path", help='Path to checkpoint for model')
     parser.add_argument("--opt_path", help='Path to checkpoint for optimizer')
-    celeba_path = '/home/yandex/AMNLP2021/malnick/datasets/celebA'
-    ffhq_path = '/home/yandex/AMNLP2021/malnick/datasets/ffhq-128'
     parser.add_argument("--path", metavar="PATH", help="Path to image directory")
     parser.add_argument('--eval', action='store_true', help='Use for evaluating a model', default=None)
     parser.add_argument('--sample_name', help='Name of sample size in case of evaluation')
@@ -73,9 +74,9 @@ def get_args(**kwargs) -> EasyDict:
     assert out_dict.get('forget_baseline', False) or out_dict.path
     if out_dict.path:
         if 'ffhq' in out_dict.path.lower():
-            out_dict.path = ffhq_path
+            out_dict.path = FFHQ_ROOT
         elif 'celeba' in out_dict.path.lower():
-            out_dict.path = celeba_path
+            out_dict.path = CELEBA_ROOT
 
     return EasyDict(out_dict)
 

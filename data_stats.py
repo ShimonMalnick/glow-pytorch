@@ -5,12 +5,14 @@ from torchvision.utils import save_image
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from utils import get_dataset, create_horizontal_bar_plot
+from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES
 from time import time
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from collections import Counter
 from functools import reduce
+from datasets import CelebAPartial
+import shutil
 
 
 def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
@@ -20,7 +22,7 @@ def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
     if not os.path.exists(file_name):
 
         begin = time()
-        ds = get_dataset('/home/yandex/AMNLP2021/malnick/datasets/celebA', 128, data_split=split)
+        ds = get_dataset(CELEBA_ROOT, 128, data_split=split)
         dl = DataLoader(ds, batch_size=256, shuffle=False, num_workers=16)
         cur = time()
         print("building dataset took: ", round(cur - begin, 2), " seconds")
@@ -34,8 +36,7 @@ def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
         torch.save(all_identities, file_name)
     else:
         all_identities = torch.load(file_name)
-    num_identities = 10177
-    hist_tensor = torch.bincount(all_identities, minlength=num_identities)[1:].float()  # sliced to remove 0 since
+    hist_tensor = torch.bincount(all_identities, minlength=CELEBA_NUM_IDENTITIES)[1:].float()  # sliced to remove 0 since
     # identities are labeled {1,2, ..., num_identities}
     print(hist_tensor[:50])
     non_zero_elements = hist_tensor[hist_tensor.nonzero()]
@@ -56,14 +57,15 @@ def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
     with open(os.path.join(out_dir, f'stats_{split}.json'), 'w') as f:
         json.dump(data, f, indent=4)
     plt.figure(figsize=(20, 10))
-    plt.bar(np.arange(num_identities), hist_tensor.numpy())
+    plt.bar(np.arange(CELEBA_NUM_IDENTITIES), hist_tensor.numpy())
     plt.savefig(os.path.join(out_dir, f'hist_{split}.png'))
 
 
 def save_images_chosen_identities(ids: List[int], save_dir: str, split: str='train'):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    ds = get_dataset('/home/yandex/AMNLP2021/malnick/datasets/celebA', 128, data_split=split)
+    images_root = os.path.join(CELEBA_ROOT, "celeba", "img_align_celeba")
+    ds = get_dataset(CELEBA_ROOT, 128, data_split=split)
     all_identities = torch.load(os.path.join('outputs/celeba_stats', f'identities_{split}.pt'))
     for identity in ids:
         cur_dir = os.path.join(save_dir, str(identity), split, "images")  # images added just to use ImageFolder dataset
@@ -71,9 +73,10 @@ def save_images_chosen_identities(ids: List[int], save_dir: str, split: str='tra
         ids_tensors = (all_identities == identity).nonzero(as_tuple=True)[0]
         print(f"for split {split} and identity {identity} got: {ids_tensors.shape} images")
         for i, id_tensor in enumerate(ids_tensors):
-            cur_img, cur_label = ds[id_tensor]
+            cur_file_name = ds.filename[id_tensor]
+            _, cur_label = ds[id_tensor]
             assert cur_label.item() == identity
-            save_image(cur_img, os.path.join(cur_dir, str(i) + '.png'))
+            shutil.copy2(os.path.join(images_root, cur_file_name), cur_dir)
 
 
 def parse_line(line):
@@ -111,6 +114,11 @@ def get_celeba_attributes_stats(attr_file_path: str='/home/yandex/AMNLP2021/maln
 
 
 if __name__ == '__main__':
-    # save_dir = '/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/train_set_frequent_identities'
-    # save_images_chosen_identities(ids=[4], save_dir=save_dir)
-    get_celeba_attributes_stats()
+    # get_celeba_attributes_stats()
+
+    # train_ids = torch.load(os.path.join('outputs/celeba_stats', f'identities_train.pt'))
+    # train_hist = torch.bincount(train_ids, minlength=CELEBA_NUM_IDENTITIES)[1:].float()
+    # save_images_chosen_identities([1, 4, 6, 7, 8, 12, 13, 14, 15], '/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities',
+    #                               split='train')
+    ds = CelebAPartial('/home/yandex/AMNLP2021/malnick/datasets/celebA', split='val', target_type='identity')
+
