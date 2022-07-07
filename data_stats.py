@@ -36,8 +36,10 @@ def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
         torch.save(all_identities, file_name)
     else:
         all_identities = torch.load(file_name)
-    hist_tensor = torch.bincount(all_identities, minlength=CELEBA_NUM_IDENTITIES)[1:].float()  # sliced to remove 0 since
-    # identities are labeled {1,2, ..., num_identities}
+
+    # slicing to remove 0 since identities are labeled {1,2, ..., num_identities}
+    hist_tensor = torch.bincount(all_identities, minlength=CELEBA_NUM_IDENTITIES)[1:].float()
+
     print(hist_tensor[:50])
     non_zero_elements = hist_tensor[hist_tensor.nonzero()]
     data = {'split': split,
@@ -114,11 +116,11 @@ def get_celeba_attributes_stats(attr_file_path: str='/home/yandex/AMNLP2021/maln
 
 
 if __name__ == '__main__':
-    # get_celeba_attributes_stats()
+    get_celeba_attributes_stats()
 
     # train_ids = torch.load(os.path.join('outputs/celeba_stats', f'identities_train.pt'))
     # train_hist = torch.bincount(train_ids, minlength=CELEBA_NUM_IDENTITIES)[1:].float()
     # save_images_chosen_identities([1, 4, 6, 7, 8, 12, 13, 14, 15], '/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities',
     #                               split='train')
-    ds = CelebAPartial('/home/yandex/AMNLP2021/malnick/datasets/celebA', split='val', target_type='identity')
+
 
