@@ -29,23 +29,18 @@ class CelebAPartial(vision_datasets.CelebA):
             exclude_indices += self.exclude_images(exclude_images)
         if exclude_identities is not None:
             exclude_indices += self.exclude_identities(exclude_identities)
+
         if exclude_indices:
+            print(f"excluding {len(exclude_indices)} images")
             exclude_indices.sort(reverse=True)  # sorting to delete from the end thus maintaining the indices order
             for idx in exclude_indices:
                 del self.filename[idx]
             index_tensor = torch.ones(len(self.attr), dtype=bool)
             index_tensor[exclude_indices] = False
-            for t in self.target_type:
-                if t == "attr":
-                    self.attr = self.attr[index_tensor]
-                elif t == "identity":
-                    self.identity = self.identity[index_tensor]
-                elif t == "bbox":
-                    self.bbox = self.bbox[index_tensor]
-                elif t == "landmarks":
-                    self.landmarks = self.landmarks[index_tensor]
-                else:
-                    raise ValueError(f'Target type "{t}" is not recognized.')
+            self.attr = self.attr[index_tensor]
+            self.identity = self.identity[index_tensor]
+            self.bbox = self.bbox[index_tensor]
+            self.landmarks_align = self.landmarks_align[index_tensor]
 
     def exclude_images(self, exclude_images) -> List[int]:
         res = []
