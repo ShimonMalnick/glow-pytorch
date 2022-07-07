@@ -1,9 +1,7 @@
 import math
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from typing import Union, Dict, Type
-
 from matplotlib import pyplot as plt
-
 from model import Glow
 import torch
 from easydict import EasyDict
@@ -124,6 +122,7 @@ def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, datase
 def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=None, **kwargs):
     if dataset is None:
         dataset = get_dataset(data_root_path, image_size, **kwargs)
+    print("loading Data Set of size: ", len(dataset))
     loader = get_dataloader(data_root_path, batch_size, image_size, num_workers, dataset=dataset)
     loader = iter(loader)
 
@@ -199,25 +198,19 @@ def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs):
             data = json.load(in_j)
     elif not isinstance(data, dict):
         raise ValueError('data must be a dictionary or a path to a json file')
-
     # Figure Size
     fig, ax = plt.subplots(figsize=(16, 9))
-
     # Horizontal Bar Plot
     ax.barh(list(data.keys()), list(data.values()))
-
     # Remove axes splines
     for s in ['top', 'bottom', 'left', 'right']:
         ax.spines[s].set_visible(False)
-
     # Remove x, y Ticks
     ax.xaxis.set_ticks_position('none')
     ax.yaxis.set_ticks_position('none')
-
     # Add padding between axes and labels
     ax.xaxis.set_tick_params(pad=5)
     ax.yaxis.set_tick_params(pad=10)
-
     # Add x, y gridlines
     ax.grid(b=True, color='grey',
             linestyle='-.', linewidth=0.5,
@@ -225,7 +218,6 @@ def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs):
 
     # Show top values
     ax.invert_yaxis()
-
     # Add annotation to bars
     for i in ax.patches:
         plt.text(i.get_width() + 0.2, i.get_y() + 0.5,

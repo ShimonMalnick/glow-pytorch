@@ -1,7 +1,6 @@
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-from math import log, sqrt, pi
-from utils import get_args, save_dict_as_json, make_exp_dir, save_model_optimizer, get_dataloader
+from math import log
+from utils import get_args, save_dict_as_json, make_exp_dir, save_model_optimizer
 import torch
 from torch import nn, optim
 from torchvision import utils
@@ -9,6 +8,7 @@ from model import Glow
 from utils import sample_data
 from typing import List, Tuple
 from time import time
+import wandb
 
 
 def calc_z_shapes(n_channel, input_size, n_flow, n_block) -> List[Tuple]:
@@ -95,21 +95,26 @@ def train(args, model, optimizer):
             warmup_lr = args.lr
             optimizer.param_groups[0]["lr"] = warmup_lr
             optimizer.step()
-
+            wandb.log({"loss": loss.item(),
+                       "log_p": log_p.item(),
+                       "log_det": log_det.item(),
+                       "prob": log_p.item() + log_det.item()})
             pbar.set_description(
                 f"iter: {i + 1};Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; lr: {warmup_lr:.7f}"
             )
 
             if i % 100 == 0:
                 print(f'Avg time after {i + 1} iterations: {(time() - cur) / (i + 1):.5f} seconds')
+                cur_image_name = f'experiments/{args.exp_name}/samples/{str(i + 1).zfill(6)}.png'
                 with torch.no_grad():
                     utils.save_image(
                         model_single.reverse(z_sample).cpu().data,
-                        f'experiments/{args.exp_name}/samples/{str(i + 1).zfill(6)}.png',
+                        cur_image_name,
                         normalize=True,
                         nrow=10,
                         range=(-0.5, 0.5),
                     )
+                wandb.log({"samples": wandb.Image(cur_image_name)})
 
             if i % 10000 == 0:
                 save_model_optimizer(args, i, model, optimizer)
@@ -143,6 +148,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args = get_args()
     args.exp_name = make_exp_dir(args.exp_name)
+    wandb.init(project="Glow-Train", entity="malnick", name=args.exp_name, config=args)
     print(args)
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
