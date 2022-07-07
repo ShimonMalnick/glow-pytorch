@@ -14,27 +14,30 @@ class CelebAPartial(vision_datasets.CelebA):
                  transform: Optional[Callable] = None,
                  target_transform: Optional[Callable] = None,
                  download: bool = False,
-                 exclude_images: List[str] = None, 
-                 exclude_identities: List[int] = None):
+                 exclude_images: List[str] = None,
+                 exclude_identities: List[int] = None,
+                 include_only_images: List[str] = None,
+                 include_only_identities: List[int] = None):
         super().__init__(root, split=split, target_type=target_type, transform=transform,
                          target_transform=target_transform, download=download)
         """
-        Added the last two arguments on top of CelebA dataset from torchvision, in order to exclude certain files according to 
-        given args. expecting (possible) args:
+        Added arguments on top of CelebA dataset from torchvision, in order to exclude certain files according to 
+        given args. expecting (possible) args, or including only certain files:
         1. exclude_images: List[str] - list of file_names (with original name from celeba) to exclude
         2. exclude_identities: List[int] - list of identities to exclude (from possible {1, 2, ..., 10177} identities)
+        3. include_only_images: List[str] - list of file_names (with original name from celeba) to include in dataset
+        4. include_only_identities: List[int] - list of identities to include in dataset
         """
+        assert not (exclude_images or exclude_identities) and (include_only_images or include_only_identities), \
+            "excluding and including are mutually exclusive"
         exclude_indices = []
         if exclude_images is not None:
-            exclude_indices += self.exclude_images(exclude_images)
+            exclude_indices += self.__exclude_images(exclude_images)
         if exclude_identities is not None:
-            exclude_indices += self.exclude_identities(exclude_identities)
+            exclude_indices += self.__exclude_identities(exclude_identities)
 
         if exclude_indices:
-            print(f"excluding {len(exclude_indices)} images")
-            exclude_indices.sort(reverse=True)  # sorting to delete from the end thus maintaining the indices order
-            for idx in exclude_indices:
-                del self.filename[idx]
+            self.filename = [self.filename[i] for i in range(len(self.filename)) if i not in exclude_indices]
             index_tensor = torch.ones(len(self.attr), dtype=bool)
             index_tensor[exclude_indices] = False
             self.attr = self.attr[index_tensor]
@@ -42,14 +45,29 @@ class CelebAPartial(vision_datasets.CelebA):
             self.bbox = self.bbox[index_tensor]
             self.landmarks_align = self.landmarks_align[index_tensor]
 
-    def exclude_images(self, exclude_images) -> List[int]:
+        include_indices = []
+        if include_only_images is not None:
+            include_indices += self.__include_only_images(include_only_images)
+        if include_only_identities is not None:
+            include_indices += self.__include_only_identities(include_only_identities)
+
+        if include_indices:
+            self.filename = [self.filename[i] for i in include_indices]
+            index_tensor = torch.zeros(len(self.attr), dtype=bool)
+            index_tensor[include_indices] = True
+            self.attr = self.attr[index_tensor]
+            self.identity = self.identity[index_tensor]
+            self.bbox = self.bbox[index_tensor]
+            self.landmarks_align = self.landmarks_align[index_tensor]
+
+    def __exclude_images(self, exclude_images) -> List[int]:
         res = []
         for path in exclude_images:
             assert path in self.filename, f"{path} is not in the dataset"
             res.append(self.filename.index(path))
         return res
 
-    def exclude_identities(self, exclude_identities) -> List[int]:
+    def __exclude_identities(self, exclude_identities) -> List[int]:
         assert 'identity' in self.target_type, "identity is not in the target_type"
         res = []
         for identity in exclude_identities:
@@ -57,6 +75,12 @@ class CelebAPartial(vision_datasets.CelebA):
             exclude_indices = ((self.identity == identity).nonzero(as_tuple=True)[0]).tolist()
             res += exclude_indices
         return res
+
+    def __include_only_images(self, include_only_images):
+        pass
+
+    def __include_only_identities(self, include_only_identities):
+        pass
 
 
 class PathsDataset(Dataset):
