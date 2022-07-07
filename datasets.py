@@ -28,13 +28,13 @@ class CelebAPartial(vision_datasets.CelebA):
         3. include_only_images: List[str] - list of file_names (with original name from celeba) to include in dataset
         4. include_only_identities: List[int] - list of identities to include in dataset
         """
-        assert not (exclude_images or exclude_identities) and (include_only_images or include_only_identities), \
+        assert not ((exclude_images or exclude_identities) and (include_only_images or include_only_identities)), \
             "excluding and including are mutually exclusive"
         exclude_indices = []
         if exclude_images is not None:
-            exclude_indices += self.__exclude_images(exclude_images)
+            exclude_indices += self.__images2idx(exclude_images)
         if exclude_identities is not None:
-            exclude_indices += self.__exclude_identities(exclude_identities)
+            exclude_indices += self.__identities2idx(exclude_identities)
 
         if exclude_indices:
             self.filename = [self.filename[i] for i in range(len(self.filename)) if i not in exclude_indices]
@@ -47,9 +47,9 @@ class CelebAPartial(vision_datasets.CelebA):
 
         include_indices = []
         if include_only_images is not None:
-            include_indices += self.__include_only_images(include_only_images)
+            include_indices += self.__images2idx(include_only_images)
         if include_only_identities is not None:
-            include_indices += self.__include_only_identities(include_only_identities)
+            include_indices += self.__identities2idx(include_only_identities)
 
         if include_indices:
             self.filename = [self.filename[i] for i in include_indices]
@@ -60,27 +60,21 @@ class CelebAPartial(vision_datasets.CelebA):
             self.bbox = self.bbox[index_tensor]
             self.landmarks_align = self.landmarks_align[index_tensor]
 
-    def __exclude_images(self, exclude_images) -> List[int]:
+    def __images2idx(self, images_names) -> List[int]:
         res = []
-        for path in exclude_images:
+        for path in images_names:
             assert path in self.filename, f"{path} is not in the dataset"
             res.append(self.filename.index(path))
         return res
 
-    def __exclude_identities(self, exclude_identities) -> List[int]:
+    def __identities2idx(self, identities) -> List[int]:
         assert 'identity' in self.target_type, "identity is not in the target_type"
         res = []
-        for identity in exclude_identities:
+        for identity in identities:
             assert 1 <= identity <= 10177, f"{identity} is not in the dataset"
-            exclude_indices = ((self.identity == identity).nonzero(as_tuple=True)[0]).tolist()
-            res += exclude_indices
+            cur_indices = ((self.identity == identity).nonzero(as_tuple=True)[0]).tolist()
+            res += cur_indices
         return res
-
-    def __include_only_images(self, include_only_images):
-        pass
-
-    def __include_only_identities(self, include_only_identities):
-        pass
 
 
 class PathsDataset(Dataset):
