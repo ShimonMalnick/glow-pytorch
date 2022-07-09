@@ -22,9 +22,9 @@ class ForgetSampler(Sampler):
         return self.batch_size
 
     def __iter__(self):
-        sequential_part = [i for i in range(len(self.data_source) * self.reps)]
+        sequential_part = [i % len(self.data_source) for i in range(len(self.data_source) * self.reps)]
         remainder_part = torch.randint(low=0, high=len(self.data_source),
-                                       size=(self.batch_size - len(sequential_part))).tolist()
+                                       size=(self.batch_size - len(sequential_part), )).tolist()
         return iter(sequential_part + remainder_part)
 
 
