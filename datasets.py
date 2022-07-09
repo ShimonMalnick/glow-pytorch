@@ -1,9 +1,31 @@
 from typing import Union, Optional, List, Callable
 
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 from PIL import Image
 import torch
 import torchvision.datasets as vision_datasets
+
+
+class ForgetSampler(Sampler):
+    """
+    Sampler that enables equals probability to all samples in cases of len(dataset) < batch_size.
+    """
+    def __init__(self, data_source, batch_size):
+        assert len(data_source) < batch_size, f"This sampler is used only when len(data_source) < batch_size but" \
+                                              f" got batch_size={batch_size}, len(data_source)={len(data_source)}"
+        super().__init__(data_source)
+        self.data_source = data_source
+        self.batch_size = batch_size
+        self.reps = batch_size // len(data_source)
+
+    def __len__(self):
+        return self.batch_size
+
+    def __iter__(self):
+        sequential_part = [i for i in range(len(self.data_source) * self.reps)]
+        remainder_part = torch.randint(low=0, high=len(self.data_source),
+                                       size=(self.batch_size - len(sequential_part))).tolist()
+        return iter(sequential_part + remainder_part)
 
 
 class CelebAPartial(vision_datasets.CelebA):
