@@ -48,17 +48,15 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument('--config', help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', help='number of gpu devices to use', type=int)
     if kwargs.get('forget', False):
-        parser.add_argument('--forget_path', help='path to forget dataset root')
+        parser.add_argument('--forget_images', help='path to images to forget')
+        parser.add_argument('--forget_identity', help='Identity to forget', type=int)
         parser.add_argument('--forget_size', help='Number of images to forget', type=int)
         parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
         parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
         parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
-        parser.add_argument('--forget_noise', help='Noise added to images during the forgetting process. this parameter '
-                                                   'is the std of random noise added to the images', type=float)
-        parser.add_argument('--forget_baseline', help='Whehther running baseline forget experiment, meaning just'
+        parser.add_argument('--forget_baseline', help='Whether running baseline forget experiment, meaning just'
                                                       ' forgetting with no regularization', type=bool)
-        parser.add_argument('--forget_compare_path', help='Path to directory containing images from an identity '
-                                                          'we didn\'t forget, for evaluation purposes')
+    # if kwargs.get('eval', False):
 
     args = parser.parse_args()
     out_dict = EasyDict()
