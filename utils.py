@@ -11,6 +11,9 @@ import os
 import torchvision.datasets as vision_datasets
 from torchvision import transforms
 from torch.utils.data import DataLoader
+from arcface_model import Backbone
+
+# Constants
 CELEBA_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/celebA'
 FFHQ_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/ffhq-128'
 CELEBA_NUM_IDENTITIES = 10177
@@ -79,11 +82,15 @@ def get_args(**kwargs) -> EasyDict:
     return EasyDict(out_dict)
 
 
-def make_exp_dir(exp_name, exist_ok=False) -> str:
+def make_exp_dir(exp_name, exist_ok=False, forget=False) -> str:
     if not exp_name:
         exp_name = chr(random.randint(97, ord('z'))) + chr(random.randint(97, ord('z')))
-    os.makedirs(f'experiments/{exp_name}/samples', exist_ok=exist_ok)
-    os.makedirs(f'experiments/{exp_name}/checkpoints', exist_ok=exist_ok)
+    if forget:
+        os.makedirs(f"experiments/forget/{exp_name}", exist_ok=exist_ok)
+        os.makedirs(f'experiments/forget/{exp_name}/checkpoints', exist_ok=exist_ok)
+    else:
+        os.makedirs(f'experiments/{exp_name}/samples', exist_ok=exist_ok)
+        os.makedirs(f'experiments/{exp_name}/checkpoints', exist_ok=exist_ok)
     return exp_name
 
 
@@ -103,8 +110,8 @@ def get_dataset(data_root_path, image_size, **kwargs):
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor()])
     if 'celeba' in data_root_path.lower():
-        split = 'all'
-        if 'data_split' in kwargs and kwargs['data_split']:
+        assert 'data_split' in kwargs, 'data_split must be specified for celeba'
+        if kwargs['data_split']:
             split = kwargs['data_split']
         ds = vision_datasets.CelebA(data_root_path, split, transform=transform, download=False, target_type='identity')
     else:
@@ -230,12 +237,16 @@ def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs):
     plt.close()
 
 
-def save_model_optimizer(args, iter_num, model, optimizer):
+def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experiments', last=False):
+    if last:
+        model_id = "last"
+    else:
+        model_id = str(iter_num + 1).zfill(6)
     torch.save(
-        model.state_dict(), f'experiments/{args.exp_name}/checkpoints/model_{str(iter_num + 1).zfill(6)}.pt'
+        model.state_dict(), f'{save_prefix}/{args.exp_name}/checkpoints/model_{model_id}.pt'
     )
     torch.save(
-        optimizer.state_dict(), f'experiments/{args.exp_name}/checkpoints/optim_{str(iter_num + 1).zfill(6)}.pt'
+        optimizer.state_dict(), f'{save_prefix}/{args.exp_name}/checkpoints/optim_{model_id}.pt'
     )
 
 
@@ -251,3 +262,21 @@ def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False):
 
     with open(out_path, 'w') as out_j:
         json.dump(d, out_j, indent=4)
+
+
+def load_arcface(device=None):
+    model = Backbone(50, 0.6, 'ir_se').to('cpu')
+    model.requires_grad_(False)
+    cls_ckpt = "/home/yandex/AMNLP2021/malnick/arcface_data/models/model_ir_se50.pth"
+    model.load_state_dict(torch.load(cls_ckpt, map_location='cpu'))
+    if device:
+        model = model.to(device)
+    return model.eval()
+
+
+def load_arcface_transform():
+    return transforms.Compose([transforms.Resize((112, 112)),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5),
+                                                 (0.5, 0.5,
+                                                  0.5))])
