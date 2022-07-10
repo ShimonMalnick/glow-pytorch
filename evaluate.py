@@ -126,16 +126,12 @@ def compute_similarity_vs_bpd(folders: List[str], similarities_json: str = 'outp
                              ToTensor(),
                              lambda img: quantize_image(img, args.n_bits)])
 
-        params_dict = EasyDict({})
-        # base_ds = CelebA(root=CELEBA_ROOT, transform=transform, target_type='identity', split='train')
-        # with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
-        #     identity2indices = json.load(f)
+        base_ds = CelebA(root=CELEBA_ROOT, transform=transform, target_type='identity', split='train')
+        with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
+            identity2indices = json.load(f)
         for identity in relevant_ids:
-            # cur_ds = Subset(base_ds, identity2indices[str(identity)])
-            params_dict.forget_identity = identity
-            cur_params = args2dset_params(params_dict, 'forget')
-            ds = get_partial_dataset(transform=transform, **cur_params)
-            dsets.append((f'identity_{identity}', ds))
+            cur_ds = Subset(base_ds, identity2indices[str(identity)])
+            dsets.append((f'identity_{identity}', cur_ds))
         data = eval_models([(os.path.basename(os.path.normpath(folder)), cur_checkpoint)], args, dsets, **kwargs)
         save_path = f'{folder}/bpd_vs_similarity.json'
         save_dict_as_json(data, save_path)

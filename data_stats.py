@@ -15,6 +15,8 @@ from functools import reduce
 from utils import load_arcface, load_arcface_transform, save_dict_as_json
 import shutil
 from forget import get_partial_dataset
+import torchvision.datasets as vision_dsets
+from torchvision.transforms import ToTensor
 
 
 def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
@@ -178,5 +180,20 @@ def get_identity2identities_similarity(identity: int):
     save_dict_as_json(outputs, f'outputs/celeba_stats/{identity}_similarities.json')
 
 
+def compute_celeba_identity2indices(save_path='outputs/celeba_stats/identity2indices.json'):
+    start = time()
+    ds = vision_dsets.CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=ToTensor())
+    dl = DataLoader(ds, batch_size=1024, shuffle=False)
+    identity2indices = {}
+    for _, y in dl:
+        for i in range(len(y)):
+            identity = y[i].item()
+            if identity not in identity2indices:
+                identity2indices[identity] = []
+            identity2indices[identity].append(i)
+    save_dict_as_json(identity2indices, save_path)
+    print(f"took {round(time() - start, 2)} seconds")
+
+
 if __name__ == '__main__':
-    pass
+    compute_celeba_identity2indices()
