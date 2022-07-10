@@ -280,3 +280,19 @@ def load_arcface_transform():
                             transforms.Normalize((0.5, 0.5, 0.5),
                                                  (0.5, 0.5,
                                                   0.5))])
+
+
+def compute_cosine_similarity(e1, e2, mean=False):
+    """
+    Compute cosine similarity matrix (or reduced mean) of two arcface embedding matrices
+    :param e1: First embedding's matrix of shape (N_1, E)
+    :param e2: Second embedding's matrix of shape (N_2, E)
+    :param mean: if true, return a mean of the outputs matrix, i.e. a scalar
+    :return: matrix E = e_1 @ e_2.T of shape (N_1, N_2)
+    """
+    e1 = e1
+    e2 = e2
+    e = e1 @ e2.T
+    if mean:
+        return e.mean()
+    return e

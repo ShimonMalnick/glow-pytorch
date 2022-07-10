@@ -1,18 +1,20 @@
 import json
 import os
-from typing import List
-from torchvision.utils import save_image
+from glob import glob
+from typing import List, Tuple
+from PIL import Image
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES
+from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, compute_cosine_similarity
 from time import time
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from collections import Counter
 from functools import reduce
-from datasets import CelebAPartial
+from utils import load_arcface, load_arcface_transform, save_dict_as_json
 import shutil
+from forget import get_partial_dataset
 
 
 def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
@@ -115,12 +117,66 @@ def get_celeba_attributes_stats(attr_file_path: str='/home/yandex/AMNLP2021/maln
     print("plotting took ", round(time() - save_time, 2), " seconds")
 
 
+def similarity_to_distance(similarity, mean=False):
+    dist = 1 - similarity
+    if mean:
+        return dist.mean()
+    return dist
+
+
+def images_to_similarity(folders: List[Tuple[str, str]], save_path='outputs/celeba_stats/similarity.json'):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    cls = load_arcface(device=device)
+    t = load_arcface_transform()
+    scores = {}
+    for i, (name, folder) in enumerate(folders):
+        paths = glob(f"{folder}/*")
+        tensors = torch.stack([t(Image.open(path)) for path in paths]).to(device)
+        cur_embeddings = cls(tensors)
+        for j in range(i, len(folders)):
+            name_j = folders[j][0]
+            folder_j = folders[j][1]
+            paths_j = glob(f"{folder_j}/*")
+            tensors_j = torch.stack([t(Image.open(path)) for path in paths_j]).to(device)
+            embeddings_j = cls(tensors_j)
+            similarity = compute_cosine_similarity(cur_embeddings, embeddings_j, mean=True)
+            scores[f"{name},{name_j}"] = similarity.item()
+
+    save_dict_as_json(save_dict=scores, save_path=save_path)
+    return scores
+
+
+def get_identity2identities_similarity(identity: int):
+    start = time()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    arcface = load_arcface(device=device)
+    transform = load_arcface_transform()
+    base_id_ds = get_partial_dataset(transform, include_only_identities=[identity])
+
+    base_id_tensors = torch.stack([base_id_ds[i][0].to(device) for i in range(len(base_id_ds))])
+    base_id_embeddings = arcface(base_id_tensors)
+    rest_of_ids_ds = get_partial_dataset(transform, exclude_identities=[identity])
+    rest_dl = DataLoader(rest_of_ids_ds, batch_size=128, shuffle=False)
+    ids_similarities = {i: [] for i in range(1, CELEBA_NUM_IDENTITIES + 1) if i != identity}
+    for i, (x, y) in enumerate(rest_dl):
+        x = x.to(device)
+        y = y.to(device)
+        with torch.no_grad():
+            embeddings = arcface(x)  # of shape (128, E)
+        # nest line is of shape (#base_id images, 128)
+        similarity = compute_cosine_similarity(base_id_embeddings, embeddings, mean=False)
+        similarity = torch.mean(similarity, dim=0)  # shape (128)
+        batch_ids = torch.unique(y).tolist()
+        for id_num in batch_ids:
+            ids_similarities[id_num].append(similarity[y == id_num].detach().cpu())
+        print(f"finished {i} batches in {round(time() - start, 2)} seconds")
+
+    outputs = {k: torch.cat(v).mean().item() for k, v in ids_similarities.items() if len(v) > 0}
+    torch.save(outputs, f'outputs/celeba_stats/{identity}_similarities.pt')
+    print("finished all in ", round(time() - start, 2), " seconds")
+    outputs = {k: v for k, v in sorted(outputs.items(), key=lambda item: item[1])}
+    save_dict_as_json(outputs, f'outputs/celeba_stats/{identity}_similarities.json')
+
+
 if __name__ == '__main__':
-    get_celeba_attributes_stats()
-
-    # train_ids = torch.load(os.path.join('outputs/celeba_stats', f'identities_train.pt'))
-    # train_hist = torch.bincount(train_ids, minlength=CELEBA_NUM_IDENTITIES)[1:].float()
-    # save_images_chosen_identities([1, 4, 6, 7, 8, 12, 13, 14, 15], '/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities',
-    #                               split='train')
-
-
+    pass
