@@ -1,10 +1,11 @@
-from time import time
-from utils import get_args, save_dict_as_json, load_model, compute_bpd, quantize_image
+import json
+from torchvision.datasets import CelebA
+from utils import get_args, save_dict_as_json, load_model, compute_bpd, quantize_image, CELEBA_NUM_IDENTITIES, \
+    CELEBA_ROOT
 import os
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision.transforms import Compose, RandomHorizontalFlip, ToTensor, Resize
-import torchvision.datasets as vision_datasets
 from easydict import EasyDict
 from forget import args2dset_params, get_partial_dataset
 from glob import glob
@@ -94,8 +95,55 @@ def run_eval_on_models(folders: List[str], dsets_identities: List[int], **kwargs
     return eval_models(ckpts, args, dsets, **kwargs)
 
 
+def compute_similarity_vs_bpd(folders: List[str], similarities_json: str = 'outputs/celeba_stats/1_similarities.json',
+                              step=1, **kwargs):
+    """
+    Compute data for a plot of similarity (x-axis) vs bpd (y-axis) of different identities, for the given models the
+    reside in folders
+    :param step: Step on the number of identities to use for the plot
+    :param similarities_json:
+    :param folders: folders to evaluate (that include ckpts)
+    :param kwargs: arguments relevant for the models (same arguments to all models)
+    :return:
+    """
+    args = get_args(forget=True)
+    with open(similarities_json, 'r') as f:
+        similarities_dict = json.load(f)
+    relevant_ids = [int(k) for k in similarities_dict.keys()]
+    relevant_ids = [relevant_ids[i] for i in range(0, len(relevant_ids), step)]
+    for folder in folders:
+        last_model_path = f'{folder}/checkpoints/model_last.pt'
+        if os.path.isfile(last_model_path):
+            cur_checkpoint = last_model_path
+        else:
+            cur_checkpoint = sorted(glob(f'{folder}/checkpoints/model_*.pt'))[-1]
+        args.ckpt_path = cur_checkpoint
+        model: Glow = load_model(args, torch.device("cuda" if torch.cuda.is_available() else "cpu"), training=False)
+        model.eval()
+        dsets: List[Tuple[str, Dataset]] = []
+        transform = Compose([Resize((args.img_size, args.img_size)),
+                             RandomHorizontalFlip(),
+                             ToTensor(),
+                             lambda img: quantize_image(img, args.n_bits)])
+
+        params_dict = EasyDict({})
+        # base_ds = CelebA(root=CELEBA_ROOT, transform=transform, target_type='identity', split='train')
+        # with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
+        #     identity2indices = json.load(f)
+        for identity in relevant_ids:
+            # cur_ds = Subset(base_ds, identity2indices[str(identity)])
+            params_dict.forget_identity = identity
+            cur_params = args2dset_params(params_dict, 'forget')
+            ds = get_partial_dataset(transform=transform, **cur_params)
+            dsets.append((f'identity_{identity}', ds))
+        data = eval_models([(os.path.basename(os.path.normpath(folder)), cur_checkpoint)], args, dsets, **kwargs)
+        save_path = f'{folder}/bpd_vs_similarity.json'
+        save_dict_as_json(data, save_path)
+
+
 if __name__ == '__main__':
-    # folders = glob("experiments/forget/baseline*")
-    # run_eval_on_models(folders, [1, 4, 6, 7, 8, 12, 13, 14, 15], save_path='outputs/forget_bpd/forget_baseline.json')
-    folders = ['experiments/forget/all_images']
-    run_eval_on_models(folders, [1, 4, 6, 7, 8, 12, 13, 14, 15], save_path='outputs/forget_bpd/tmp.json')
+    # folders = glob("experiments/forget/*thresh*")
+    # folders = list(set(folders) - set(glob("experiments/forget/*baseline*")))
+    # run_eval_on_models(folders, [1, 4, 6, 7, 8, 12, 13, 14, 15], save_path='outputs/forget_bpd/forget_thresh_1e4.json')
+    folders = ["experiments/forget/all_images_thresh_1e4"]
+    compute_similarity_vs_bpd(folders, step=10)
