@@ -1,7 +1,8 @@
 import json
+import math
 import os
 from glob import glob
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from PIL import Image
 import numpy as np
 import torch
@@ -196,6 +197,58 @@ def compute_celeba_identity2indices(save_path='outputs/celeba_stats/identity2ind
     save_dict_as_json(identity2indices, save_path)
 
 
+def plot_identity_neighbors(neighbors_index: List[int], chosen_id: int = 1,
+                            save_path='outputs/identity_1/neighbors.png'):
+    """
+    Given an identity from celeba, plot neighbors of that identities according to given distance indices
+    :param save_path: save path of the plot.
+    :param neighbors_index: the indices of identities, meaning if idx = 1 we will choose the nearest neighbor of id1,
+    if idx = -1 the furthest identity from id1, etc.
+    :param chosen_id: the identity to plot neighbors
+    """
+    similarities: List[Tuple[int, float]]
+    identity2indices: Dict[str, List[int]]
+    with open("outputs/celeba_stats/identity2indices.json", "r") as f:
+        identity2indices = json.load(f)
+    with open("outputs/celeba_stats/1_similarities.json", "r") as f:
+        similarities = list(reversed([(int(k), v) for k, v in json.load(f).items()]))
+    assert all([abs(i) < len(similarities) for i in neighbors_index]), "found neighbors index out of range"
+    n_neighbors = len(neighbors_index)
+    num_images = n_neighbors + 1  # added one for the chosen id
+    n_rows = math.floor(math.sqrt(num_images))
+    n_cols = math.ceil(num_images / n_rows)
+    print(f"n_rows: {n_rows}, n_cols: {n_cols}")
+    f, axarr = plt.subplots(n_rows, n_cols, figsize=(10, 10))
+    axarr = axarr.reshape(-1)
+
+    # load dataset
+    celeba_ds = vision_dsets.CelebA(root=CELEBA_ROOT, target_type='identity', split='train')
+    print(f"Loaded CelebA")
+
+    def identity2image(identity: int) -> Image:
+        assert identity2indices[str(identity)], "no images found for this identity"
+        return celeba_ds[identity2indices[str(identity)][0]][0]
+
+    def absolute_index(idx, arr_len):
+        return idx if idx >= 0 else arr_len + idx
+
+    # plot identity
+    id_image = identity2image(chosen_id)
+    axarr[0].imshow(id_image)
+    axarr[0].set_title(f"Chosen Identity: {chosen_id}")
+    axarr[0].axis('off')
+
+    # plot neighbors
+    for i in range(len(neighbors_index)):
+        cur_identity, cur_similarity = similarities[neighbors_index[i]]
+        cur_image = identity2image(cur_identity)
+        axarr[i + 1].imshow(cur_image)
+        axarr[i + 1].set_title(f"N={neighbors_index[i]}:{absolute_index(neighbors_index[i], len(similarities))}")
+        axarr[i + 1].axis('off')
+        print("rendered image ", i)
+    plt.tight_layout()
+    plt.savefig(save_path)
+
 
 if __name__ == '__main__':
-    compute_celeba_identity2indices()
+    plot_identity_neighbors(neighbors_index=[1, 2, 3, 10, 20, -1, -2, -3, -10, -20], chosen_id=1)
