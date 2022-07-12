@@ -181,18 +181,20 @@ def get_identity2identities_similarity(identity: int):
 
 
 def compute_celeba_identity2indices(save_path='outputs/celeba_stats/identity2indices.json'):
-    start = time()
     ds = vision_dsets.CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=ToTensor())
     dl = DataLoader(ds, batch_size=1024, shuffle=False)
     identity2indices = {}
-    for _, y in dl:
+    start = time()
+    for batch_idx, (_, y) in enumerate(dl, start=1):
         for i in range(len(y)):
             identity = y[i].item()
             if identity not in identity2indices:
                 identity2indices[identity] = []
             identity2indices[identity].append(i)
+        print(f"finished batch {batch_idx} in ", round(time() - start, 2), " seconds")
+        start = time()
     save_dict_as_json(identity2indices, save_path)
-    print(f"took {round(time() - start, 2)} seconds")
+
 
 
 if __name__ == '__main__':
