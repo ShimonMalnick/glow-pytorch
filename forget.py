@@ -10,7 +10,7 @@ from train import calc_loss
 from datasets import CelebAPartial, ForgetSampler
 import wandb
 
-FORGET_THRESH = 1e5
+FORGET_THRESH = 1e3
 
 
 def get_partial_dataset(transform, **kwargs) -> CelebAPartial:
@@ -66,6 +66,7 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, de
         loss, log_p, log_det = calc_loss(log_p, logdet, args.img_size, n_bins)
         loss = loss_sign * loss
         if torch.abs(loss).item() > FORGET_THRESH:
+            wandb.log({f"stop_training_{loss_name}": i + 1})
             print("Loss is too large, breaking after {} iterations".format(i), flush=True)
             break
         wandb.log({f"{loss_name}_loss": loss.item(),

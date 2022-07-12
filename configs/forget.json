@@ -1,6 +1,6 @@
 {
     "batch": 32,
-    "iter": 600,
+    "iter": 1200,
     "n_flow": 32,
     "n_block": 4,
     "no_lu": false,
