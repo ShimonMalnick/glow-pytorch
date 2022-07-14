@@ -1,3 +1,4 @@
+import json
 import os
 from torch.utils.data import DataLoader
 from utils import CELEBA_ROOT, load_resnet_for_binary_cls, CELEBA_MALE_ATTR_IDX, CELEBA_GLASSES_ATTR_IDX, \
@@ -6,9 +7,13 @@ import pytorch_lightning as pl
 import torch
 from torchvision.datasets import CelebA
 from torchvision.transforms import ToTensor, Compose, Resize, RandomHorizontalFlip
-from torchmetrics import Accuracy
+from torchmetrics import Accuracy, F1Score, AUROC, ROC
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
+import matplotlib
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
+
 
 os.environ[
     'TORCH_HOME'] = '/home/yandex/AMNLP2021/malnick/.cache/torch/'  # save resnet50 checkpoint under this directory
@@ -17,6 +22,8 @@ os.environ[
 # adjustment for the loss on imbalanced dataset
 CELEBA_MALE_FRACTION = (202599 - 84434) / 84434
 CELEBA_GLASSES_FRACTION = (202599 - 13193) / 13193
+GLASSES_IDX = 0
+MALE_IDX = 1
 
 
 class TwoAttributesClassifier(pl.LightningModule):
@@ -39,8 +46,8 @@ class TwoAttributesClassifier(pl.LightningModule):
         loss = self.bceloss(y_hat, y)
         y = y.int()
         # loggings and accuracy calculations
-        glasses_acc = self.glasses_accuracy_train(y_hat[:, 0], y[:, 0])
-        male_acc = self.male_accuracy_train(y_hat[:, 1], y[:, 1])
+        glasses_acc = self.glasses_accuracy_train(y_hat[:, GLASSES_IDX], y[:, GLASSES_IDX])
+        male_acc = self.male_accuracy_train(y_hat[:, MALE_IDX], y[:, MALE_IDX])
         self.log('train_loss', loss)
         self.log('train_glass_accuracy', glasses_acc)
         self.log('train_male_accuracy', male_acc)
@@ -52,8 +59,8 @@ class TwoAttributesClassifier(pl.LightningModule):
         loss = self.bceloss(y_hat, y)
         y = y.int()
         # loggings and accuracy calculations
-        glasses_acc = self.glasses_accuracy_val(y_hat[:, 0], y[:, 0])
-        male_acc = self.male_accuracy_val(y_hat[:, 1], y[:, 1])
+        glasses_acc = self.glasses_accuracy_val(y_hat[:, GLASSES_IDX], y[:, GLASSES_IDX])
+        male_acc = self.male_accuracy_val(y_hat[:, MALE_IDX], y[:, MALE_IDX])
         self.log('val_loss', loss)
         self.log("val_glasses_accuracy", glasses_acc)
         self.log("val_male_accuracy", male_acc)
@@ -103,8 +110,24 @@ def load_classifier(ckpt_path='attribute_classifier/checkpoints/train/epoch=5-st
     return classifier
 
 
-def evaluate_model(model: TwoAttributesClassifier, dataset: DataLoader, device=None):
+def plot_roc(fpr, tpr, auc, save_path):
+    plt.figure(figsize=(10, 10))
+    plt.plot(fpr, tpr, label=f'AUC: {auc:.4}')
+    plt.plot([0, 1], [0, 1], color='black', linestyle='--')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.legend()
+    plt.savefig(save_path)
+
+
+def evaluate_model(model: TwoAttributesClassifier, dataset: DataLoader, device=None, save_dir=None):
+    NAME_IDX = 0
+    METRIC_IDX = 1
+    glasses_metrics = [('accuracy', Accuracy()), ('f1', F1Score()), ('auc', AUROC()), ('roc', ROC(pos_label=1))]
+    male_metrics = [('accuracy', Accuracy()), ('f1', F1Score()), ('auc', AUROC()), ('roc', ROC(pos_label=1))]
+    num_metrics = len(male_metrics)
     model.eval()
+    total = 0
     with torch.no_grad():
         for batch in dataset:
             x, y = batch
@@ -113,9 +136,28 @@ def evaluate_model(model: TwoAttributesClassifier, dataset: DataLoader, device=N
                 y = y.to(device)
             y_hat = model(x)
             y = y.int()
+            total += y.shape[0]
+            for i in range(num_metrics):
+                glasses_metrics[i][METRIC_IDX](y_hat[:, GLASSES_IDX].detach().cpu(), y[:, GLASSES_IDX].detach().cpu())
+                male_metrics[i][METRIC_IDX](y_hat[:, MALE_IDX].detach().cpu(), y[:, MALE_IDX].detach().cpu())
+
+    glasses_results = {}
+    male_results = {}
+    for i in range(num_metrics - 1):  # without roc metrics
+        glasses_results[glasses_metrics[i][NAME_IDX]] = glasses_metrics[i][METRIC_IDX].compute().item()
+        male_results[male_metrics[i][NAME_IDX]] = male_metrics[i][METRIC_IDX].compute().item()
+
+    res = {"Glasses": glasses_results, "Male": male_results, "Total Test Examples": total}
+    if save_dir:
+        fpr, tpr, _ = glasses_metrics[num_metrics - 1][METRIC_IDX].compute()
+        plot_roc(fpr.numpy(), tpr.numpy(), glasses_results['auc'], f"{save_dir}/glasses_roc.png")
+        fpr, tpr, _ = male_metrics[num_metrics - 1][METRIC_IDX].compute()
+        plot_roc(fpr, tpr, male_results['auc'], f"{save_dir}/male_roc.png")
+        with open(f"{save_dir}/metrics.json", "w") as f:
+            json.dump(res, f, indent=4)
 
 
-if __name__ == '__main__':
+def train():
     exp_name = "train"
     logger = WandbLogger(project='celeba-atribute-classifier', save_dir='attribute_classifier/', name=exp_name)
     model = TwoAttributesClassifier(pretrained_backbone=True)
@@ -129,3 +171,11 @@ if __name__ == '__main__':
                                           save_top_k=2, monitor="val_loss")
     trainer = pl.Trainer(logger=logger, max_epochs=10, devices=1, accelerator="gpu", callbacks=[checkpoint_callback])
     trainer.fit(model, train_dl, val_dl)
+
+
+if __name__ == '__main__':
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    cls = load_classifier(device=device)
+    ds = get_dataset(split='test')
+    dl = DataLoader(ds, batch_size=128, shuffle=False, num_workers=8)
+    evaluate_model(cls, dl, device, save_dir='attribute_classifier/metrics')
