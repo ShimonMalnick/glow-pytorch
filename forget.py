@@ -184,7 +184,8 @@ def main():
     print(args)
     args.FORGET_THRESH = FORGET_THRESH
     save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
-    wandb.init(project="Glow-Forget", entity="malnick", name=args.exp_name, config=args)
+    wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
+               dir=f'experiments/forget/{args.exp_name}/wandb')
     model: torch.nn.DataParallel = load_model(args, device, training=True)
     transform = Compose([Resize((args.img_size, args.img_size)),
                          RandomHorizontalFlip(),

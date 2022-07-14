@@ -2,6 +2,8 @@ import math
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from typing import Union, Dict, Type
 from matplotlib import pyplot as plt
+from torchvision.transforms import Normalize
+
 from model import Glow
 import torch
 from easydict import EasyDict
@@ -12,11 +14,14 @@ import torchvision.datasets as vision_datasets
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from arcface_model import Backbone
+from torchvision.models import resnet50
 
 # Constants
 CELEBA_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/celebA'
 FFHQ_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/ffhq-128'
 CELEBA_NUM_IDENTITIES = 10177
+CELEBA_MALE_ATTR_IDX = 20
+CELEBA_GLASSES_ATTR_IDX = 15
 
 
 def get_args(**kwargs) -> EasyDict:
@@ -88,6 +93,7 @@ def make_exp_dir(exp_name, exist_ok=False, forget=False) -> str:
     if forget:
         os.makedirs(f"experiments/forget/{exp_name}", exist_ok=exist_ok)
         os.makedirs(f'experiments/forget/{exp_name}/checkpoints', exist_ok=exist_ok)
+        os.makedirs(f'experiments/forget/{exp_name}/wandb', exist_ok=exist_ok)
     else:
         os.makedirs(f'experiments/{exp_name}/samples', exist_ok=exist_ok)
         os.makedirs(f'experiments/{exp_name}/checkpoints', exist_ok=exist_ok)
@@ -296,3 +302,39 @@ def compute_cosine_similarity(e1, e2, mean=False):
     if mean:
         return e.mean()
     return e
+
+
+def get_num_params(model: torch.nn.Module):
+    """
+    Returns the number of trainable parameters in the given model
+    :param model: torch model
+    """
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def load_resnet_for_binary_cls(pretrained=True, all_layers_trainable=True, device=None, num_outputs=1):
+    """
+    Loads a pretrained resenet50 apart from the last classification layer (fc) that is changed to a new untrained layer
+    with output size 1
+    :param num_outputs: number of outputs of the new last layer
+    :param pretrained: whether to load the pretrained weights or not
+    :param device: device to load the model to
+    :param all_layers_trainable: if True, all layers are trainable, otherwise only the last layer is trainable
+    :return:
+    """
+    model = resnet50(pretrained=pretrained)
+    for param in model.parameters():
+        param.requires_grad = all_layers_trainable
+    model.fc = torch.nn.Linear(2048, num_outputs)  # 2048 is the number of activations before the fc layer
+    if device:
+        model = model.to(device)
+    return model
+
+
+def get_resnet_50_normalization():
+    """
+    This is the normalization according to:
+    https://pytorch.org/vision/stable/models/generated/torchvision.models.resnet50.html#torchvision.models.ResNet50_Weights
+    :return:
+    """
+    return Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
