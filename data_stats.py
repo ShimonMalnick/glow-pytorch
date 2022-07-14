@@ -6,10 +6,10 @@ from typing import List, Tuple, Dict
 from PIL import Image
 import numpy as np
 import torch
+import random
 from torch.utils.data import DataLoader
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, compute_cosine_similarity
 from time import time
-import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from collections import Counter
 from functools import reduce
@@ -18,6 +18,9 @@ import shutil
 from forget import get_partial_dataset
 import torchvision.datasets as vision_dsets
 from torchvision.transforms import ToTensor
+import matplotlib
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
 
 
 def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
@@ -183,17 +186,17 @@ def get_identity2identities_similarity(identity: int):
 
 def compute_celeba_identity2indices(save_path='outputs/celeba_stats/identity2indices.json'):
     ds = vision_dsets.CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=ToTensor())
-    dl = DataLoader(ds, batch_size=1024, shuffle=False)
     identity2indices = {}
     start = time()
-    for batch_idx, (_, y) in enumerate(dl, start=1):
-        for i in range(len(y)):
-            identity = y[i].item()
-            if identity not in identity2indices:
-                identity2indices[identity] = []
-            identity2indices[identity].append(i)
-        print(f"finished batch {batch_idx} in ", round(time() - start, 2), " seconds")
-        start = time()
+    for i in range(len(ds)):
+        _, y = ds[i]
+        identity: int = y.item()
+        if (i + 1) % 1000 == 0:
+            print(f"finished {i} images in {round(time() - start, 2)} seconds")
+            start = time()
+        if identity not in identity2indices:
+            identity2indices[identity] = []
+        identity2indices[identity].append(i)
     save_dict_as_json(identity2indices, save_path)
 
 
@@ -218,37 +221,49 @@ def plot_identity_neighbors(neighbors_index: List[int], chosen_id: int = 1,
     n_rows = math.floor(math.sqrt(num_images))
     n_cols = math.ceil(num_images / n_rows)
     print(f"n_rows: {n_rows}, n_cols: {n_cols}")
-    f, axarr = plt.subplots(n_rows, n_cols, figsize=(10, 10))
-    axarr = axarr.reshape(-1)
-
+    fig = plt.figure(figsize=(15, 15))
+    plt.title(f"nearest neighbors of identity {chosen_id} out of {len(similarities)} neighbors".title())
+    plt.axis('off')
     # load dataset
     celeba_ds = vision_dsets.CelebA(root=CELEBA_ROOT, target_type='identity', split='train')
-    print(f"Loaded CelebA")
+    print(f"Loaded CelebA", flush=True)
 
     def identity2image(identity: int) -> Image:
         assert identity2indices[str(identity)], "no images found for this identity"
-        return celeba_ds[identity2indices[str(identity)][0]][0]
+        lst = identity2indices[str(identity)]
+        # print(lst)
+        idx = random.choice(lst)
+        image, label = celeba_ds[idx]
+        assert label == identity, f"label: {label} and identity: {identity} do not match"
+        return image
 
     def absolute_index(idx, arr_len):
         return idx if idx >= 0 else arr_len + idx
 
     # plot identity
     id_image = identity2image(chosen_id)
-    axarr[0].imshow(id_image)
-    axarr[0].set_title(f"Chosen Identity: {chosen_id}")
-    axarr[0].axis('off')
+    ax = fig.add_subplot(n_rows, n_cols, 1)
+    ax.imshow(id_image)
+    ax.title.set_text(f"id: {chosen_id}")
+    ax.axis('off')
 
     # plot neighbors
     for i in range(len(neighbors_index)):
         cur_identity, cur_similarity = similarities[neighbors_index[i]]
         cur_image = identity2image(cur_identity)
-        axarr[i + 1].imshow(cur_image)
-        axarr[i + 1].set_title(f"N={neighbors_index[i]}:{absolute_index(neighbors_index[i], len(similarities))}")
-        axarr[i + 1].axis('off')
+        cur_ax = fig.add_subplot(n_rows, n_cols, i + 2)
+        cur_ax.imshow(cur_image)
+        # cur_ax.title.set_text(f"N={neighbors_index[i]}:{absolute_index(neighbors_index[i], len(similarities))}")
+        cur_ax.title.set_text(f"N={neighbors_index[i]}")
+        cur_ax.axis('off')
         print("rendered image ", i)
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(save_path)
+    plt.close()
 
 
 if __name__ == '__main__':
-    plot_identity_neighbors(neighbors_index=[1, 2, 3, 10, 20, -1, -2, -3, -10, -20], chosen_id=1)
+    base_path = 'outputs/identity_1/neighbors'
+    for i in range(1, 7):
+        plot_identity_neighbors(neighbors_index=[1, 2, 3, 4, 5, 10, 20, -20, -10, -5, -4, -3, -2, -1], chosen_id=1,
+                                save_path=f'{base_path}{i}.png')
