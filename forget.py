@@ -1,3 +1,4 @@
+import math
 import os
 from model import Glow
 import torch
@@ -9,8 +10,6 @@ from torchvision.transforms import Compose, RandomHorizontalFlip, ToTensor, Resi
 from train import calc_loss
 from datasets import CelebAPartial, ForgetSampler
 import wandb
-
-FORGET_THRESH = 1e3
 
 
 def get_partial_dataset(transform, **kwargs) -> CelebAPartial:
@@ -42,20 +41,35 @@ def get_data_iterator(ds: CelebAPartial, batch_size, num_workers=16) -> Iterator
             yield next(dl_iter)
 
 
+def calc_batch_bpd(args, model, batch):
+    """
+    Calculates the batch-wise BPD of the model.
+    :param args: arguments relevant to the model's parameters and input image size.
+    :param model: model to calculate the BPD with.
+    :param batch: batch to calculate the BPD of.
+    :return: batch-wise BPD of the model.
+    """
+    n_bins = 2 ** args.n_bits
+    M = args.img_size * args.img_size * 3
+    with torch.no_grad():
+        log_p, logdet, _ = model(batch)
+    cur_nll = - torch.sum(log_p + logdet.mean()).item() / batch.shape[0]
+    cur_bpd = (cur_nll + (M * math.log(n_bins))) / (math.log(2) * M)
+    return cur_bpd
+
+
 def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, device, forget_optimizer,
            remember_optimizer):
     n_bins = 2 ** args.n_bits
     for i in range(args.iter):
         if (i + 1) % args.forget_every == 0:
-            print("Forget batch")
             loss_sign = -1.0
             loss_name = "forget"
             cur_batch, _ = next(forget_iter)
             optimizer = forget_optimizer
         else:
-            print("regular batch")
             loss_sign = 1.0
-            loss_name = "regular"
+            loss_name = "remember"
             cur_batch, _ = next(remember_iter)
             optimizer = remember_optimizer
         cur_batch = cur_batch.to(device)
@@ -65,14 +79,19 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, de
 
         loss, log_p, log_det = calc_loss(log_p, logdet, args.img_size, n_bins)
         loss = loss_sign * loss
-        if torch.abs(loss).item() > FORGET_THRESH:
-            wandb.log({f"stop_training_{loss_name}": i + 1})
-            print("Loss is too large, breaking after {} iterations".format(i), flush=True)
+
+        cur_bpd = calc_batch_bpd(args, model, cur_batch)
+        if loss_name == "forget" and cur_bpd >= (args.base_forget_bpd * args.forget_thresh):
+            print("breaking after {} iterations".format(i + 1))
+            wandb.log({f"achieved_thresh": i + 1})
             break
+
         wandb.log({f"{loss_name}_loss": loss.item(),
                    f"{loss_name}_log_p": log_p.item(),
                    f"{loss_name}_log_det": log_det.item(),
-                   f"{loss_name}_prob": log_p.item() + log_det.item()})
+                   f"{loss_name}_prob": log_p.item() + log_det.item(),
+                   f"{loss_name}_bpd": cur_bpd,
+                   "batch_type": loss_sign})
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -158,13 +177,16 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer):
 
         loss, log_p, log_det = calc_loss(log_p, logdet, args.img_size, n_bins)
         loss = loss * -1.0  # to forget instead of learning these examples
-        if torch.abs(loss).item() > FORGET_THRESH:
-            print("Loss is too large, breaking after {} iterations".format(i))
+        cur_bpd = calc_batch_bpd(args, model, cur_batch)
+        if cur_bpd >= (args.base_forget_bpd * args.forget_thresh):
+            print("breaking after {} iterations".format(i + 1))
+            wandb.log({f"achieved_thresh": i + 1})
             break
         wandb.log({"loss": loss.item(),
                    "log_p": log_p.item(),
                    "log_det": log_det.item(),
-                   "prob": log_p.item() + log_det.item()})
+                   "prob": log_p.item() + log_det.item(),
+                   f"bpd": cur_bpd})
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -178,21 +200,23 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer):
 
 
 def main():
+    # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     args = get_args(forget=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args.exp_name = make_exp_dir(args.exp_name, exist_ok=False, forget=True)
     print(args)
-    args.FORGET_THRESH = FORGET_THRESH
-    save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
-    wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
-               dir=f'experiments/forget/{args.exp_name}/wandb')
     model: torch.nn.DataParallel = load_model(args, device, training=True)
     transform = Compose([Resize((args.img_size, args.img_size)),
                          RandomHorizontalFlip(),
                          ToTensor(),
                          lambda img: quantize_image(img, args.n_bits)])
     forget_iter = args2data_iter(args, ds_type='forget', transform=transform)
+    first_batch = next(forget_iter)[0]
+    args.base_forget_bpd = calc_batch_bpd(args, model, first_batch.to(device))
+    wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
+               dir=f'experiments/forget/{args.exp_name}/wandb')
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
     if args.forget_baseline:
         forget_baseline(forget_iter, args, model, device, forget_optimizer)
     else:

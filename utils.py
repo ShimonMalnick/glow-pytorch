@@ -64,6 +64,9 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
         parser.add_argument('--forget_baseline', help='Whether running baseline forget experiment, meaning just'
                                                       ' forgetting with no regularization', type=bool)
+        parser.add_argument('--forget_thresh', help='Threshold on forgetting procedure. when BPD of a batch of forget '
+                                                    'images reaches more then base_bpd * forget_thresh, the finetuning '
+                                                    'is stopped.', type=float)
     # if kwargs.get('eval', False):
 
     args = parser.parse_args()
