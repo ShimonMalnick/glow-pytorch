@@ -1,6 +1,9 @@
 import json
+import math
 import re
 from time import time
+
+import numpy as np
 from matplotlib import pyplot as plt
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, compute_bpd, quantize_image, CELEBA_ROOT
@@ -176,9 +179,46 @@ def plot_similarity_vs_bpd(save_path: str, bpd_json: str,
     plt.close()
 
 
-if __name__ == '__main__':
+def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution'):
+    if not os.path.isdir(save_dir):
+        os.mkdir(save_dir)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    args = get_args(forget=True)
+    model: Glow = load_model(args, device, training=False)
+    bpds = []
+    transform = Compose([Resize((args.img_size, args.img_size)),
+                         RandomHorizontalFlip(),
+                         ToTensor(),
+                         lambda img: quantize_image(img, args.n_bits)])
+    ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
 
-    folders = glob("experiments/forget/*thresh_1e4*")
+    M = args.img_size * args.img_size * 3
+    n_bins = 2 ** args.n_bits
+    for batch in dl:
+        x, _ = batch
+        x = x.to(device)
+        with torch.no_grad():
+            log_p, logdet, _ = model(x)
+        assert x.shape[0] == batch_size
+        cur_nll = - torch.sum(log_p + logdet).item() / x.shape[0]
+        cur_bpd = (cur_nll + (M * math.log(n_bins))) / (math.log(2) * M)
+        bpds.append(cur_bpd)
+
+    bpds = np.array(bpds)
+    np.save(f"{save_dir}/bpd_distribution.npy", bpds)
+
+    data = {'mean': np.mean(bpds),
+            'std': np.std(bpds),
+            'min': np.min(bpds),
+            'max': np.max(bpds),
+            'median': np.median(bpds)}
+    save_dict_as_json(data, f"{save_dir}/bpd_distribution.json")
+
+
+if __name__ == '__main__':
+    get_celeba_bpd_distribution(32)
+    # folders = glob("experiments/forget/*thresh_1e4*")
     # folder = ['experiments/forget/all_images_thresh_1e3']
     # run_eval_on_models(folder, [1, 13, 15], save_path=f"{folder[0]}/bpd.json")
 
