@@ -61,6 +61,7 @@ def calc_batch_bpd(args, model, batch):
 def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, device, forget_optimizer,
            remember_optimizer):
     n_bins = 2 ** args.n_bits
+    # remember_bpd_thresh = args.base_remember_bpd + 3 * args.base_remember_std
     for i in range(args.iter):
         if (i + 1) % args.forget_every == 0:
             loss_sign = -1.0
@@ -80,21 +81,24 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, de
         loss, log_p, log_det = calc_loss(log_p, logdet, args.img_size, n_bins)
         loss = loss_sign * loss
 
-        cur_bpd = calc_batch_bpd(args, model, cur_batch)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        cur_bpd = calc_batch_bpd(args, model, cur_batch.detach().clone())
+
+        wandb.log({f"{loss_name}": {"loss": loss.item(),
+                                    "bpd": cur_bpd,
+                                    "log_p": log_p.item(),
+                                    "log_det": log_det.item(),
+                                    "prob": log_p.item() + log_det.item()},
+                   "batch_type": loss_sign
+                   })
+
         if loss_name == "forget" and cur_bpd >= (args.base_forget_bpd * args.forget_thresh):
             print("breaking after {} iterations".format(i + 1))
             wandb.log({f"achieved_thresh": i + 1})
             break
-
-        wandb.log({f"{loss_name}_loss": loss.item(),
-                   f"{loss_name}_log_p": log_p.item(),
-                   f"{loss_name}_log_det": log_det.item(),
-                   f"{loss_name}_prob": log_p.item() + log_det.item(),
-                   f"{loss_name}_bpd": cur_bpd,
-                   "batch_type": loss_sign})
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
 
         print(
             f"Iter: {i + 1} Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; "
@@ -177,19 +181,23 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer):
 
         loss, log_p, log_det = calc_loss(log_p, logdet, args.img_size, n_bins)
         loss = loss * -1.0  # to forget instead of learning these examples
-        cur_bpd = calc_batch_bpd(args, model, cur_batch)
-        if cur_bpd >= (args.base_forget_bpd * args.forget_thresh):
-            print("breaking after {} iterations".format(i + 1))
-            wandb.log({f"achieved_thresh": i + 1})
-            break
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        cur_bpd = calc_batch_bpd(args, model, cur_batch.detach().clone())
+
         wandb.log({"loss": loss.item(),
                    "log_p": log_p.item(),
                    "log_det": log_det.item(),
                    "prob": log_p.item() + log_det.item(),
                    f"bpd": cur_bpd})
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+
+        if cur_bpd >= (args.base_forget_bpd * args.forget_thresh):
+            print("breaking after {} iterations".format(i + 1))
+            wandb.log({f"achieved_thresh": i + 1})
+            break
 
         print(
             f"Iter: {i + 1} Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f};")
@@ -213,14 +221,20 @@ def main():
     forget_iter = args2data_iter(args, ds_type='forget', transform=transform)
     first_batch = next(forget_iter)[0]
     args.base_forget_bpd = calc_batch_bpd(args, model, first_batch.to(device))
-    wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
-               dir=f'experiments/forget/{args.exp_name}/wandb')
+    print("base forget bpd: ", args.base_forget_bpd)
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
     if args.forget_baseline:
+        wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
+                   dir=f'experiments/forget/{args.exp_name}/wandb')
+        save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
         forget_baseline(forget_iter, args, model, device, forget_optimizer)
     else:
         remember_iter = args2data_iter(args, ds_type='remember', transform=transform)
+        wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
+                   dir=f'experiments/forget/{args.exp_name}/wandb')
+        save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
+        # args.base_remember_bpd = 0.609  # constant derived from the mean of BPD across all of celeba train
+        # args.base_remember_std = 0.033  # constant derived from the std of BPD across all of celeba train
         remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         forget(args, remember_iter, forget_iter, model, device, forget_optimizer, remember_optimizer)
 
