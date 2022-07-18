@@ -62,8 +62,8 @@ def calc_batch_bpd(args, model, batch, reduce=True) -> Union[float, torch.Tensor
     return cur_bpd
 
 
-def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, device, forget_optimizer,
-           remember_optimizer, ref_batch: torch.Tensor):
+def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Glow, torch.nn.DataParallel],
+           device, forget_optimizer, remember_optimizer, ref_batch: torch.Tensor):
     n_bins = 2 ** args.n_bits
     # remember_bpd_thresh = args.base_remember_bpd + 3 * args.base_remember_std
     # forget_every = 2
