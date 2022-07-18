@@ -6,7 +6,7 @@ import imageio
 import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader, Dataset
-from utils import get_args, compute_bpd, load_model, quantize_image, save_dict_as_json, create_horizontal_bar_plot, get_dataset
+from utils import get_args, compute_dataloader_bpd, load_model, quantize_image, save_dict_as_json, create_horizontal_bar_plot, get_dataset
 from torchvision import utils
 from torchvision.transforms import ToTensor, Resize, Compose
 from model import Glow
@@ -239,7 +239,7 @@ def get_bpd_of_images(args, model, device, paths=None, **kwargs):
         dset = PathsDataset(paths, transform=to_tensor)
         n = len(paths)
     dl = DataLoader(dset, batch_size=args.batch, shuffle=False, num_workers=args.num_workers, drop_last=False)
-    return compute_bpd(2 ** args.n_bits, args.img_size, model, device, dl)
+    return compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, dl)
 
 
 def get_bpd_ood(args, model, device, save_dir='outputs/nll'):

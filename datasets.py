@@ -1,5 +1,4 @@
 from typing import Union, Optional, List, Callable
-
 from torch.utils.data import Dataset, Sampler
 from PIL import Image
 import torch
@@ -38,8 +37,10 @@ class CelebAPartial(vision_datasets.CelebA):
                  download: bool = False,
                  exclude_images: List[str] = None,
                  exclude_identities: List[int] = None,
+                 exclude_indices: List[int] = None,
                  include_only_images: List[str] = None,
-                 include_only_identities: List[int] = None):
+                 include_only_identities: List[int] = None,
+                 include_only_indices: List[int] = None):
         super().__init__(root, split=split, target_type=target_type, transform=transform,
                          target_transform=target_transform, download=download)
         """
@@ -47,21 +48,25 @@ class CelebAPartial(vision_datasets.CelebA):
         given args. expecting (possible) args, or including only certain files:
         1. exclude_images: List[str] - list of file_names (with original name from celeba) to exclude
         2. exclude_identities: List[int] - list of identities to exclude (from possible {1, 2, ..., 10177} identities)
-        3. include_only_images: List[str] - list of file_names (with original name from celeba) to include in dataset
-        4. include_only_identities: List[int] - list of identities to include in dataset
+        3. exclude_indices: List[int] - list of indices to exclude
+        4. include_only_images: List[str] - list of file_names (with original name from celeba) to include in dataset
+        5. include_only_identities: List[int] - list of identities to include in dataset
+        6. include_only_indices: List[int] - list of indices to include in dataset
         """
         assert not ((exclude_images or exclude_identities) and (include_only_images or include_only_identities)), \
             "excluding and including are mutually exclusive"
-        exclude_indices = []
+        all_exclude_indices = []
         if exclude_images is not None:
-            exclude_indices += self.__images2idx(exclude_images)
+            all_exclude_indices += self.__images2idx(exclude_images)
         if exclude_identities is not None:
-            exclude_indices += self.__identities2idx(exclude_identities)
+            all_exclude_indices += self.__identities2idx(exclude_identities)
+        if exclude_indices is not None:
+            all_exclude_indices += exclude_indices
 
-        if exclude_indices:
-            self.filename = [self.filename[i] for i in range(len(self.filename)) if i not in exclude_indices]
+        if all_exclude_indices:
+            self.filename = [self.filename[i] for i in range(len(self.filename)) if i not in all_exclude_indices]
             index_tensor = torch.ones(len(self.attr), dtype=bool)
-            index_tensor[exclude_indices] = False
+            index_tensor[all_exclude_indices] = False
             self.attr = self.attr[index_tensor]
             self.identity = self.identity[index_tensor]
             self.bbox = self.bbox[index_tensor]
@@ -72,6 +77,8 @@ class CelebAPartial(vision_datasets.CelebA):
             include_indices += self.__images2idx(include_only_images)
         if include_only_identities is not None:
             include_indices += self.__identities2idx(include_only_identities)
+        if include_only_indices is not None:
+            include_indices += include_only_indices
 
         if include_indices:
             self.filename = [self.filename[i] for i in include_indices]

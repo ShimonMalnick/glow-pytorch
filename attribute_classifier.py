@@ -1,11 +1,14 @@
 import json
 import os
 from time import time
+import logging
+from typing import Iterable, Dict, Optional
 
+import wandb
 from easydict import EasyDict
 from torch.utils.data import DataLoader
 from utils import CELEBA_ROOT, load_resnet_for_binary_cls, CELEBA_MALE_ATTR_IDX, CELEBA_GLASSES_ATTR_IDX, \
-    get_resnet_50_normalization, load_model, save_dict_as_json
+    get_resnet_50_normalization, load_model, save_dict_as_json, get_args, get_partial_dataset
 import pytorch_lightning as pl
 import torch
 from torchvision.datasets import CelebA
@@ -15,7 +18,9 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from model import Glow
 from train import calc_z_shapes
-
+from forget import make_forget_exp_dir, quantize_image, get_data_iterator, calc_batch_bpd
+from forget import forget as vanilla_forget
+from forget import forget_baseline as vanilla_forget_baseline
 
 os.environ[
     'TORCH_HOME'] = '/home/yandex/AMNLP2021/malnick/.cache/torch/'  # save resnet50 checkpoint under this directory
@@ -26,6 +31,9 @@ CELEBA_MALE_FRACTION = (202599 - 84434) / 84434
 CELEBA_GLASSES_FRACTION = (202599 - 13193) / 13193
 GLASSES_IDX = 0
 MALE_IDX = 1
+GLOW_BASELINE_CKPT = "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/outputs/best_model" \
+                     "/continue_celeba/model_090001.pt "
+ATTRIBUTES_INDICES_PATH = "attribute_classifier/attributes_indices.json"
 
 
 class TwoAttributesClassifier(pl.LightningModule):
@@ -179,9 +187,9 @@ def train():
     trainer.fit(model, train_dl, val_dl)
 
 
-def analyze_glow_attributes(n_samples, save_path):
+def analyze_glow_attributes(n_samples, save_path, ckpt_path=GLOW_BASELINE_CKPT):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    args = {"ckpt_path": "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/outputs/best_model/continue_celeba/model_090001.pt",
+    args = {"ckpt_path": ckpt_path,
             "n_flow": 32,
             "n_block": 4,
             "affine": False,
@@ -232,5 +240,61 @@ def get_celeba_attributes_indices(split='train', save_dir='attribute_classifier'
     save_dict_as_json(data, f"{save_dir}/attributes_indices.json")
 
 
+def get_attribute_data_iter(args, transform, include_attribute=True, ds_len: Optional[Dict] = None) -> Iterable:
+    with open(ATTRIBUTES_INDICES_PATH, "r") as f:
+        attributes_indices = json.load(f)
+    assert args.forget_attribute in ['male', 'glasses']
+    indices = attributes_indices[args.forget_attribute]
+    attr_index = CELEBA_GLASSES_ATTR_IDX if args.forget_attribute == 'glasses' else CELEBA_MALE_ATTR_IDX
+
+    def target_transform(x):
+        return x[attr_index].float()
+
+    params = {"transform": transform,
+              'target_type': 'attr',
+              "target_transform": target_transform}
+
+    if include_attribute:
+        params["include_only_indices"] = indices
+    else:
+        params["exclude_indices"] = indices
+
+    ds = get_partial_dataset(**params)
+    if ds_len is not None:
+        ds_len[f"{args.forget_attribute}_dataset"] = len(ds)
+    data_iterator = get_data_iterator(ds, args.batch, args.num_workers)
+    return data_iterator
+
+
+def forget_attribute():
+    logging.getLogger().setLevel(logging.INFO)
+    args = get_args(forget=True, forget_attribute=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_attribute")
+    logging.info(args)
+    model: torch.nn.DataParallel = load_model(args, device, training=True)
+    transform = Compose([Resize((args.img_size, args.img_size)),
+                         RandomHorizontalFlip(),
+                         ToTensor(),
+                         lambda img: quantize_image(img, args.n_bits)])
+    extra_args = {}
+    forget_iter = get_attribute_data_iter(args, transform, include_attribute=True, ds_len=extra_args)
+    first_batch = next(forget_iter)[0]
+    args.base_forget_bpd = calc_batch_bpd(args, model, first_batch.to(device))
+    logging.info(f"base forget bpd: {args.base_forget_bpd}")
+    forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    remember_iter = get_attribute_data_iter(args, transform, include_attribute=False, ds_len=extra_args)
+    ref_batch = next(remember_iter)[0].to(device)
+    args.update(extra_args)
+    wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
+               dir=f'experiments/{args.exp_name}/wandb')
+    save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
+    if args.forget_baseline:
+        vanilla_forget_baseline(forget_iter, args, model, device, forget_optimizer, ref_batch)
+    else:
+        remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        vanilla_forget(args, remember_iter, forget_iter, model, device, forget_optimizer, remember_optimizer, ref_batch)
+
+
 if __name__ == '__main__':
-    get_celeba_attributes_indices()
+    forget_attribute()

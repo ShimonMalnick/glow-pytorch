@@ -5,7 +5,7 @@ import torch
 from utils import get_args, load_model, quantize_image, save_dict_as_json, \
     save_model_optimizer, get_partial_dataset
 from torch.utils.data import DataLoader
-from typing import Iterator, Dict, Union
+from typing import Iterator, Dict, Union, Optional
 from torchvision.transforms import Compose, RandomHorizontalFlip, ToTensor, Resize
 from train import calc_loss
 from datasets import CelebAPartial, ForgetSampler
@@ -162,9 +162,10 @@ def args2dset_params(args, ds_type) -> Dict:
     return out
 
 
-def args2data_iter(args, ds_type, transform) -> Iterator:
+def args2data_iter(args, ds_type, transform, ds_len: Optional[Dict] = None) -> Iterator:
     """
     Returns a data iterator for the dataset specified by ds_type.
+    :param ds_len:
     :param transform: transform to be applied to the dataset.
     :param args: arguments determining the images/identities to forget/remember.
     :param ds_type: one of 'forget' or 'remember'
@@ -172,6 +173,8 @@ def args2data_iter(args, ds_type, transform) -> Iterator:
     """
     ds_params = args2dset_params(args, ds_type)
     ds = get_partial_dataset(transform=transform, **ds_params)
+    if ds_len is not None:
+        ds_len[f"{ds_type}_ds"] = len(ds)
     return get_data_iterator(ds, args.batch, num_workers=args.num_workers)
 
 
@@ -230,21 +233,24 @@ def main():
                          RandomHorizontalFlip(),
                          ToTensor(),
                          lambda img: quantize_image(img, args.n_bits)])
-    forget_iter = args2data_iter(args, ds_type='forget', transform=transform)
+    extra_args = {}
+    forget_iter = args2data_iter(args, ds_type='forget', transform=transform, ds_len=extra_args)
     first_batch = next(forget_iter)[0]
     args.base_forget_bpd = calc_batch_bpd(args, model, first_batch.to(device))
-    logging.info("base forget bpd: ", args.base_forget_bpd)
+    logging.info(f"base forget bpd: {args.base_forget_bpd}")
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     ref_batch = get_reference_batch(args, transform, device)
     if args.forget_baseline:
+        args.update(extra_args)
         wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
                    dir=f'experiments/{args.exp_name}/wandb')
         save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
         forget_baseline(forget_iter, args, model, device, forget_optimizer, ref_batch)
     else:
-        remember_iter = args2data_iter(args, ds_type='remember', transform=transform)
+        remember_iter = args2data_iter(args, ds_type='remember', transform=transform, ds_len=extra_args)
         # args.base_remember_bpd = 0.609  # constant derived from the mean of BPD across all of celeba train
         # args.base_remember_std = 0.033  # constant derived from the std of BPD across all of celeba train
+        args.update(extra_args)
         wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
                    dir=f'experiments/{args.exp_name}/wandb')
         save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')

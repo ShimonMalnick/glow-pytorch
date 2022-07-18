@@ -1,0 +1,22 @@
+{
+    "batch": 32,
+    "iter": 800,
+    "n_flow": 32,
+    "n_block": 4,
+    "no_lu": false,
+    "affine": false,
+    "n_bits": 5,
+    "lr": 1e-5,
+    "img_size": 128,
+    "path": "celeba",
+    "data_split": "train",
+    "exp_name": "forget_glasses",
+    "num_workers": 16,
+    "devices": -1,
+    "ckpt_path": "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/outputs/best_model/continue_celeba/model_090001.pt",
+    "forget_every": 3,
+    "save_every": 10000,
+    "forget_thresh": 1e2,
+    "forget_baseline": false,
+    "forget_attribute": "glasses"
+}

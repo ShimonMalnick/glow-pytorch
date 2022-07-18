@@ -57,9 +57,12 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument('--config', help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', help='number of gpu devices to use', type=int)
     if kwargs.get('forget', False):
-        parser.add_argument('--forget_images', help='path to images to forget')
-        parser.add_argument('--forget_identity', help='Identity to forget', type=int)
-        parser.add_argument('--forget_size', help='Number of images to forget', type=int)
+        if kwargs.get('forget_attribute', False):
+            parser.add_argument('--forget_attribute', help='which attribute to forget', choices=['male', 'glasses'])
+        else:
+            parser.add_argument('--forget_images', help='path to images to forget')
+            parser.add_argument('--forget_identity', help='Identity to forget', type=int)
+            parser.add_argument('--forget_size', help='Number of images to forget', type=int)
         parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
         parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
         parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
@@ -68,7 +71,6 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--forget_thresh', help='Threshold on forgetting procedure. when BPD of a batch of forget '
                                                     'images reaches more then base_bpd * forget_thresh, the finetuning '
                                                     'is stopped.', type=float)
-    # if kwargs.get('eval', False):
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -139,13 +141,54 @@ def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=N
             yield next(loader)
 
 
-def compute_bpd(n_bins, img_size, model, device, data_loader) -> float:
+def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -> Union[float, torch.Tensor]:
     """
     Computation of bits per dimension as done in Glow, meaning we:
     - compute the negative log likelihood of the data
     - add to the log likelihood the dequantization term -Mlog(a), where M=num_pixels, a = 1/n_bins
     - divide by log(2) for change base of the log used in the nll
     - divide by num_pixels
+    :param reduce: if true, return a float representing the bpd of the whole data set. if False, return the
+    individual scores, i.e. reduced_bpd = sum(unreduced_bpd) / batch_size
+    :param n_bins: number of bins the data is quantized into.
+    :param device: the device to run the computation on.
+    :param model: The model to use for computing the nll.
+    :param img_size: the images size (square of img_sizeXimg_size)
+    :param dataset: data set for the data. the data is expected to be qunatized to n_bins.
+    :return: bits per dimension
+    """
+    nll = 0.0
+    total_images = len(dataset)
+    for i in range(total_images):
+        x, _ = dataset[i]
+        x = x.to(device)
+        with torch.no_grad():
+            log_p, logdet, _ = model(x)
+        if reduce:
+            nll -= torch.sum(log_p + logdet).item()
+        else:
+            cur_nll = - (log_p + logdet)
+            if i == 0:
+                nll = cur_nll
+            else:
+                nll = torch.cat((nll, cur_nll))
+    if reduce:
+        nll /= total_images
+    M = img_size * img_size * 3
+    bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
+    return bpd
+
+
+def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader) -> float:
+    """
+    Computation of bits per dimension as done in Glow, meaning we:
+    - compute the negative log likelihood of the data
+    - add to the log likelihood the dequantization term -Mlog(a), where M=num_pixels, a = 1/n_bins
+    - divide by log(2) for change base of the log used in the nll
+    - divide by num_pixels
+    :param device: the device to run the computation on.
+    :param model: The model to use for computing the nll.
+    :param img_size: the images size (square of img_sizeXimg_size)
     :param n_bins: number of bins the data is quantized into.
     :param data_loader: data loader for the data. the data is expected to be qunatized to n_bins.
     :return: bits per dimension
