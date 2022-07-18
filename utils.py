@@ -151,7 +151,7 @@ def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=N
             yield next(loader)
 
 
-def compute_bpd(n_bins, img_size, model, device, data_loader):
+def compute_bpd(n_bins, img_size, model, device, data_loader) -> float:
     """
     Computation of bits per dimension as done in Glow, meaning we:
     - compute the negative log likelihood of the data
@@ -199,7 +199,7 @@ def quantize_image(img, n_bits):
     return img - 0.5
 
 
-def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs):
+def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs) -> None:
     """
     Given a data dictionary (or path to json containing the data), create a horizontal bar plot and save it
     in out_path
@@ -246,7 +246,7 @@ def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs):
     plt.close()
 
 
-def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experiments', last=False):
+def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experiments', last=False) -> None:
     if last:
         model_id = "last"
     else:
@@ -259,7 +259,7 @@ def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experime
     )
 
 
-def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False):
+def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False) -> None:
     d = {}
     for p, key_name in zip(in_paths, keys_names):
         with open(p, 'r') as in_j:
@@ -273,7 +273,7 @@ def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False):
         json.dump(d, out_j, indent=4)
 
 
-def load_arcface(device=None):
+def load_arcface(device=None) -> Backbone:
     model = Backbone(50, 0.6, 'ir_se').to('cpu')
     model.requires_grad_(False)
     cls_ckpt = "/home/yandex/AMNLP2021/malnick/arcface_data/models/model_ir_se50.pth"
@@ -291,7 +291,7 @@ def load_arcface_transform():
                                                   0.5))])
 
 
-def compute_cosine_similarity(e1, e2, mean=False):
+def compute_cosine_similarity(e1, e2, mean=False) -> torch.Tensor:
     """
     Compute cosine similarity matrix (or reduced mean) of two arcface embedding matrices
     :param e1: First embedding's matrix of shape (N_1, E)
@@ -307,7 +307,7 @@ def compute_cosine_similarity(e1, e2, mean=False):
     return e
 
 
-def get_num_params(model: torch.nn.Module):
+def get_num_params(model: torch.nn.Module) -> int:
     """
     Returns the number of trainable parameters in the given model
     :param model: torch model
@@ -315,7 +315,7 @@ def get_num_params(model: torch.nn.Module):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def load_resnet_for_binary_cls(pretrained=True, all_layers_trainable=True, device=None, num_outputs=1):
+def load_resnet_for_binary_cls(pretrained=True, all_layers_trainable=True, device=None, num_outputs=1) -> resnet50:
     """
     Loads a pretrained resenet50 apart from the last classification layer (fc) that is changed to a new untrained layer
     with output size 1
