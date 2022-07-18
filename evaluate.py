@@ -2,7 +2,7 @@ import json
 import math
 import re
 from time import time
-
+import logging
 import numpy as np
 from matplotlib import pyplot as plt
 from torchvision.datasets import CelebA
@@ -14,6 +14,7 @@ from torchvision.transforms import Compose, RandomHorizontalFlip, ToTensor, Resi
 from glob import glob
 from model import Glow
 from typing import Iterable, Tuple, Dict, List
+from datasets import CelebAPartial, ForgetSampler
 
 
 def eval_model(dataloaders: Iterable[Tuple[str, DataLoader]], n_bits: int, model, device, img_size: int = 128,
@@ -45,7 +46,11 @@ def eval_models(ckpts: Iterable[Tuple[str, str]], args: Dict, dsets: Iterable[Tu
     data = {}
     dataloaders = []
     for name, ds in dsets:
-        dl = DataLoader(ds, batch_size=min(len(ds), 32), shuffle=False, num_workers=8)
+        if len(ds) < args.batch:
+            sampler = ForgetSampler(ds, args.batch)
+        else:
+            sampler = None
+        dl = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=8, sampler=sampler)
         dataloaders.append((name, dl))
     start = time()
     for name, ckpt in ckpts:
@@ -58,9 +63,32 @@ def eval_models(ckpts: Iterable[Tuple[str, str]], args: Dict, dsets: Iterable[Tu
     if 'save_path' in kwargs:
         save_path = kwargs['save_path']
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        if os.path.isfile(save_path):
+            with open(save_path, 'r') as f:
+                old_data = json.load(f)
+            for key in old_data:
+                if key in data:
+                    data[key].update(old_data[key])
+                else:
+                    data[key] = old_data[key]
         save_dict_as_json(data, save_path)
 
     return data
+
+
+def run_eval_on_models_on_images(folders: List[str], images_folders: List[str], names: List[str], **kwargs):
+    assert folders and images_folders
+    args = get_args(forget=True)
+    ckpts = [(os.path.basename(os.path.normpath(folder)), f"{folder}/checkpoints/model_last.pt") for folder in folders]
+
+    transform = Compose([Resize((args.img_size, args.img_size)),
+                         RandomHorizontalFlip(),
+                         ToTensor(),
+                         lambda img: quantize_image(img, args.n_bits)])
+    dsets = [(name, CelebAPartial(root=CELEBA_ROOT, transform=transform, target_type='identity', split='train',
+                                  include_only_images=os.listdir(folder))) for name, folder in
+             zip(names, images_folders)]
+    return eval_models(ckpts, args, dsets, **kwargs)
 
 
 def run_eval_on_models(folders: List[str], dsets_identities: List[int], **kwargs):
@@ -86,7 +114,7 @@ def run_eval_on_models(folders: List[str], dsets_identities: List[int], **kwargs
     for identity in dsets_identities:
         if identity > 0:
             cur_ds = Subset(base_ds, identity2indices[str(identity)])
-            dsets.append((f'identity_{identity}', cur_ds))
+            dsets.append((f'{identity}', cur_ds))
         else:
             dsets.append((f'celeba_train', base_ds))
     for folder in folders:
@@ -94,6 +122,7 @@ def run_eval_on_models(folders: List[str], dsets_identities: List[int], **kwargs
         if os.path.isfile(last_model_path):
             cur_checkpoint = last_model_path
         else:
+            logging.warning(f'No last checkpoint found in {folder}')
             cur_checkpoint = sorted(glob(f'{folder}/checkpoints/model_*.pt'))[-1]
         ckpts.append((os.path.basename(os.path.normpath(folder)), cur_checkpoint))
     return eval_models(ckpts, args, dsets, **kwargs)
@@ -121,7 +150,8 @@ def compute_similarity_vs_bpd(folders: List[str], similarities_json: str = 'outp
         if os.path.isfile(last_model_path):
             cur_checkpoint = last_model_path
         else:
-            cur_checkpoint = sorted(glob(f'{folder}/checkpoints/model_*.pt'))[-1]
+            raise ValueError(f'No last checkpoint found in {folder}')
+            # cur_checkpoint = sorted(glob(f'{folder}/checkpoints/model_*.pt'))[-1]
         args.ckpt_path = cur_checkpoint
         model: Glow = load_model(args, torch.device("cuda" if torch.cuda.is_available() else "cpu"), training=False)
         model.eval()
@@ -161,7 +191,7 @@ def plot_similarity_vs_bpd(save_path: str, bpd_json: str,
         data = [(bpd_dict[k], similarity_dict[k]) for k in bpd_dict.keys()]
 
     if distance:
-        data = [(d[0], 1 - d[1]) for d in data] # cosine_distance = 1 - cosine_similarity
+        data = [(d[0], 1 - d[1]) for d in data]  # cosine_distance = 1 - cosine_similarity
 
     # data should already be sorted but just in case
     data.sort(key=lambda x: x[1])
@@ -217,14 +247,25 @@ def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stat
 
 
 if __name__ == '__main__':
-    get_celeba_bpd_distribution(32)
-    # folders = glob("experiments/forget/*thresh_1e4*")
-    # folder = ['experiments/forget/all_images_thresh_1e3']
-    # run_eval_on_models(folder, [1, 13, 15], save_path=f"{folder[0]}/bpd.json")
+    folders = glob("experiments/forget/*")
+    baseline_folder = glob("experiments/forget/baseline*")
+    regular_folders = list(set(folders) - set(baseline_folder))
+    save_path = 'outputs/forget_bpd/forget.json'
+    base_image_folder = "/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities"
+    image_folders = [f"{base_image_folder}/1_{p}/train/images" for p in ["first", "second"]]
+    # run_eval_on_models(regular_folders, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path)
+    # run_eval_on_models_on_images(regular_folders, images_folders=image_folders, names=["forget_split", "unseen_split"],
+    #                              save_path=save_path)
+    compute_similarity_vs_bpd(regular_folders, step=20)
+    for p in regular_folders:
+        plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity.png', f'{p}/bpd_vs_similarity.json')
+        plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity_wo_outliers.png', f'{p}/bpd_vs_similarity.json',
+                               outliers_thresh=50)
 
-    # folders = list(set(folders) - set(glob("experiments/forget/*baseline*")))
-    # run_eval_on_models(folders, [1, 4, 6, 7, 8, 12, 13, 14, 15], save_path='outputs/forget_bpd/forget_thresh_1e4.json')
-    # run_eval_on_models(folders, [1, 13, 15], save_path='outputs/forget_bpd/forget_thresh_1e4.json')
+    # save_path = 'outputs/forget_bpd/forget_naive.json'
+    # run_eval_on_models(baseline_folder, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path)
+    # run_eval_on_models_on_images(baseline_folder, images_folders=image_folders, names=["forget_split", "unseen_split"],
+    #                              save_path=save_path)
     # compute_similarity_vs_bpd(folders, step=20)
     # base_path = "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/experiments/forget/1_image_thresh_1e4"
     # for p in folders:
