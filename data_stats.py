@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 from glob import glob
@@ -7,7 +8,7 @@ from PIL import Image
 import numpy as np
 import torch
 import random
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, compute_cosine_similarity
 from time import time
 from multiprocessing import Pool
@@ -15,10 +16,13 @@ from collections import Counter
 from functools import reduce
 from utils import load_arcface, load_arcface_transform, save_dict_as_json
 import shutil
+from torchvision.utils import save_image
 from forget import get_partial_dataset
 import torchvision.datasets as vision_dsets
 from torchvision.transforms import ToTensor
+from datasets import CelebAPartial
 import matplotlib
+
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
@@ -71,7 +75,7 @@ def get_celeba_stats(split='train', out_dir='outputs/celeba_stats'):
     plt.savefig(os.path.join(out_dir, f'hist_{split}.png'))
 
 
-def save_images_chosen_identities(ids: List[int], save_dir: str, split: str='train'):
+def save_images_chosen_identities(ids: List[int], save_dir: str, split: str = 'train'):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     images_root = os.path.join(CELEBA_ROOT, "celeba", "img_align_celeba")
@@ -95,8 +99,9 @@ def parse_line(line):
     return Counter({i: int(line[i]) for i in range(len(line)) if line[i] == '1'})
 
 
-def get_celeba_attributes_stats(attr_file_path: str='/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba/list_attr_celeba.txt',
-                                save_stats_path='outputs/celeba_stats/attributes_stats.json'):
+def get_celeba_attributes_stats(
+        attr_file_path: str = '/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba/list_attr_celeba.txt',
+        save_stats_path='outputs/celeba_stats/attributes_stats.json'):
     start_parse = time()
     with open(attr_file_path, 'r') as f:
         num_images = int(f.readline().strip())
@@ -152,17 +157,51 @@ def images_to_similarity(folders: List[Tuple[str, str]], save_path='outputs/cele
     return scores
 
 
-def get_identity2identities_similarity(identity: int):
+def get_identity2identities_sim(chosen_images: List[str],
+                                indices_json_path: str = 'outputs/celeba_stats/identity2indices.json',
+                                save_path: str = 'outputs/celeba_stats/1_first_similarities.json'):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    arcface = load_arcface(device=device)
+    transform = load_arcface_transform()
+
+    # compute embeddings of chosen images
+    chosen_images = torch.stack([transform(Image.open(path)) for path in chosen_images]).to(device)
+    chosen_embeddings = arcface(chosen_images)
+
+    identities2indices: Dict[str, List[int]]
+    with open(indices_json_path, 'r') as f:
+        identities2indices = json.load(f)
+    base_ds = vision_dsets.CelebA(root=CELEBA_ROOT, download=False, transform=transform, split='train',
+                                  target_type='identity')
+    similarities = {}
+    for idx, (identity, indices) in enumerate(identities2indices.items(), 1):
+        cur_ds = Subset(base_ds, indices)
+        cur_id = int(identity)
+        assert all([cur_ds[i][1].item() == cur_id for i in range(len(cur_ds))])
+        cur_images = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
+        cur_embeddings = arcface(cur_images)
+        cur_sim = compute_cosine_similarity(chosen_embeddings, cur_embeddings, mean=True)
+        similarities[cur_id] = cur_sim.item()
+        logging.info(f"Finished {idx}/{len(identities2indices)}")
+    save_dict_as_json(similarities, save_path)
+
+
+def get_identity2identities_similarity(identity: int = None, images: List[str] = None):
     start = time()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     arcface = load_arcface(device=device)
     transform = load_arcface_transform()
-    base_id_ds = get_partial_dataset(transform, include_only_identities=[identity])
-
+    if identity is not None:
+        base_id_ds = get_partial_dataset(transform, include_only_identities=[identity])
+        rest_of_ids_ds = get_partial_dataset(transform, exclude_identities=[identity])
+    elif images is not None:
+        base_id_ds = get_partial_dataset(transform, include_only_images=images)
+        rest_of_ids_ds = get_partial_dataset(transform, exclude_images=images)
+    else:
+        raise ValueError("Either identity or images must be specified")
     base_id_tensors = torch.stack([base_id_ds[i][0].to(device) for i in range(len(base_id_ds))])
     base_id_embeddings = arcface(base_id_tensors)
-    rest_of_ids_ds = get_partial_dataset(transform, exclude_identities=[identity])
-    rest_dl = DataLoader(rest_of_ids_ds, batch_size=128, shuffle=False)
+    rest_dl = DataLoader(rest_of_ids_ds, batch_size=256, shuffle=False)
     ids_similarities = {i: [] for i in range(1, CELEBA_NUM_IDENTITIES + 1) if i != identity}
     for i, (x, y) in enumerate(rest_dl):
         x = x.to(device)
@@ -263,7 +302,7 @@ def plot_identity_neighbors(neighbors_index: List[int], chosen_id: int = 1,
 
 
 if __name__ == '__main__':
-    base_path = 'outputs/identity_1/neighbors'
-    for i in range(1, 7):
-        plot_identity_neighbors(neighbors_index=[1, 2, 3, 4, 5, 10, 20, -20, -10, -5, -4, -3, -2, -1], chosen_id=1,
-                                save_path=f'{base_path}{i}.png')
+    logging.getLogger().setLevel(logging.INFO)
+    images = glob("/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities/1_first/train/images/*")
+    get_identity2identities_sim(images)
+
