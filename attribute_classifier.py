@@ -1,8 +1,11 @@
 import json
 import os
+from time import time
+
+from easydict import EasyDict
 from torch.utils.data import DataLoader
 from utils import CELEBA_ROOT, load_resnet_for_binary_cls, CELEBA_MALE_ATTR_IDX, CELEBA_GLASSES_ATTR_IDX, \
-    get_resnet_50_normalization
+    get_resnet_50_normalization, load_model, save_dict_as_json
 import pytorch_lightning as pl
 import torch
 from torchvision.datasets import CelebA
@@ -10,9 +13,8 @@ from torchvision.transforms import ToTensor, Compose, Resize, RandomHorizontalFl
 from torchmetrics import Accuracy, F1Score, AUROC, ROC
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-import matplotlib
-matplotlib.use('agg')
-import matplotlib.pyplot as plt
+from model import Glow
+from train import calc_z_shapes
 
 
 os.environ[
@@ -111,6 +113,10 @@ def load_classifier(ckpt_path='attribute_classifier/checkpoints/train/epoch=5-st
 
 
 def plot_roc(fpr, tpr, auc, save_path):
+    import matplotlib
+    matplotlib.use('agg')
+    import matplotlib.pyplot as plt
+
     plt.figure(figsize=(10, 10))
     plt.plot(fpr, tpr, label=f'AUC: {auc:.4}')
     plt.plot([0, 1], [0, 1], color='black', linestyle='--')
@@ -173,9 +179,58 @@ def train():
     trainer.fit(model, train_dl, val_dl)
 
 
-if __name__ == '__main__':
+def analyze_glow_attributes(n_samples, save_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    args = {"ckpt_path": "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/outputs/best_model/continue_celeba/model_090001.pt",
+            "n_flow": 32,
+            "n_block": 4,
+            "affine": False,
+            "no_lu": False,
+            "batch": 32,
+            "temp": 0.7}
+    args = EasyDict(args)
+    glow: Glow = load_model(args, device, training=False)
     cls = load_classifier(device=device)
-    ds = get_dataset(split='test')
-    dl = DataLoader(ds, batch_size=128, shuffle=False, num_workers=8)
-    evaluate_model(cls, dl, device, save_dir='attribute_classifier/metrics')
+    cls_norm = get_resnet_50_normalization()
+
+    z_shapes = calc_z_shapes(3, 128, args.n_flow, args.n_block)
+    n_iter = int(n_samples / args.batch)
+    total = 0
+    positive_males = 0
+    positive_glasses = 0
+    for i in range(n_iter):
+        cur_zs = []
+        for shape in z_shapes:
+            cur_zs.append(torch.randn(args.batch, *shape).to(device) * args.temp)
+        with torch.no_grad():
+            images = glow.reverse(cur_zs, reconstruct=False)
+            out = cls(cls_norm(images))
+            total += out.shape[0]
+            positive_glasses += torch.sum(out[:, GLASSES_IDX] >= 0.5).item()
+            positive_males += torch.sum(out[:, MALE_IDX] >= 0.5).item()
+    data = {"total": total,
+            "positive males": positive_males,
+            "positive glasses": positive_glasses,
+            "males ratio": positive_males / total,
+            "glasses ratio": positive_glasses / total}
+    save_dict_as_json(data, save_path)
+
+
+def get_celeba_attributes_indices(split='train', save_dir='attribute_classifier'):
+    ds = get_dataset(split=split)
+    data = {'male': [], 'glasses': []}
+    start = time()
+    for i in range(len(ds)):
+        _, y = ds[i]
+        if (i + 1) % 1000 == 0:
+            print(f"finished {i} images in {round(time() - start, 2)} seconds")
+            start = time()
+        if y[GLASSES_IDX] == 1:
+            data['glasses'].append(i)
+        if y[MALE_IDX] == 1:
+            data['male'].append(i)
+    save_dict_as_json(data, f"{save_dir}/attributes_indices.json")
+
+
+if __name__ == '__main__':
+    get_celeba_attributes_indices()
