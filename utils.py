@@ -161,7 +161,7 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
     total_images = len(dataset)
     for i in range(total_images):
         x, _ = dataset[i]
-        x = x.to(device)
+        x = x.to(device).unsqueeze(0)
         with torch.no_grad():
             log_p, logdet, _ = model(x)
         if reduce:
@@ -179,7 +179,7 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
     return bpd
 
 
-def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader) -> float:
+def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader, reduce=True) -> Union[float, torch.Tensor]:
     """
     Computation of bits per dimension as done in Glow, meaning we:
     - compute the negative log likelihood of the data
@@ -195,14 +195,23 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader) -> floa
     """
     nll = 0.0
     total_images = 0
-    for batch in data_loader:
+    for idx, batch in enumerate(data_loader, 1):
         x, _ = batch
         x = x.to(device)
         with torch.no_grad():
             log_p, logdet, _ = model(x)
-        nll -= torch.sum(log_p + logdet).item()
+        if reduce:
+            nll -= torch.sum(log_p + logdet).item()
+        else:
+            cur_nll = - (log_p + logdet)
+            if total_images == 0:
+                nll = cur_nll.detach().cpu()
+            else:
+                nll = torch.cat((nll, cur_nll.detach().cpu()))
         total_images += x.shape[0]
-    nll /= total_images
+        logging.debug(f"finished batch: {idx}/{len(data_loader)}")
+    if reduce:
+        nll /= total_images
     M = img_size * img_size * 3
     bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
     return bpd
