@@ -6,7 +6,7 @@ import logging
 import numpy as np
 from matplotlib import pyplot as plt
 from torchvision.datasets import CelebA
-from utils import get_args, save_dict_as_json, load_model, compute_bpd, quantize_image, CELEBA_ROOT
+from utils import get_args, save_dict_as_json, load_model, compute_dataloader_bpd, quantize_image, CELEBA_ROOT
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -23,7 +23,7 @@ def eval_model(dataloaders: Iterable[Tuple[str, DataLoader]], n_bits: int, model
     data = {}
     start = time()
     for name, dl in dataloaders:
-        cur_bpd = compute_bpd(n_bins, img_size, model, device, dl)
+        cur_bpd = compute_dataloader_bpd(n_bins, img_size, model, device, dl)
         data[name] = cur_bpd
         print(f'{name} done in {time() - start}')
         start = time()
