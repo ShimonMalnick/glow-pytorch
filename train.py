@@ -1,6 +1,6 @@
 from tqdm import tqdm
 from math import log
-from utils import get_args, save_dict_as_json, make_exp_dir, save_model_optimizer
+from utils import get_args, save_dict_as_json, save_model_optimizer
 import torch
 from torch import nn, optim
 from torchvision import utils
@@ -9,6 +9,14 @@ from utils import sample_data
 from typing import List, Tuple
 from time import time
 import wandb
+import os
+
+
+def make_train_exp_dir(exp_name, exist_ok=False, dir_name="train") -> str:
+    base_path = os.path.join("experiments", dir_name, exp_name)
+    os.makedirs(f'{base_path}/checkpoints', exist_ok=exist_ok)
+    os.makedirs(f'{base_path}/samples', exist_ok=exist_ok)
+    return exp_name
 
 
 def calc_z_shapes(n_channel, input_size, n_flow, n_block) -> List[Tuple]:
@@ -147,7 +155,7 @@ def evaluate(args, eval_model):
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args = get_args()
-    args.exp_name = make_exp_dir(args.exp_name)
+    args.exp_name = make_train_exp_dir(args.exp_name)
     wandb.init(project="Glow-Train", entity="malnick", name=args.exp_name, config=args)
     print(args)
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')

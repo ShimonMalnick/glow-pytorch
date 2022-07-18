@@ -2,25 +2,22 @@ import math
 import os
 from model import Glow
 import torch
-from utils import get_args, load_model, quantize_image, make_exp_dir, save_dict_as_json, \
-    save_model_optimizer, CELEBA_ROOT
+from utils import get_args, load_model, quantize_image, save_dict_as_json, \
+    save_model_optimizer, get_partial_dataset
 from torch.utils.data import DataLoader
-from typing import Iterator, Dict
+from typing import Iterator, Dict, Union
 from torchvision.transforms import Compose, RandomHorizontalFlip, ToTensor, Resize
 from train import calc_loss
 from datasets import CelebAPartial, ForgetSampler
 import wandb
+import logging
 
 
-def get_partial_dataset(transform, **kwargs) -> CelebAPartial:
-    """
-    Used for datasets when performing censoring/forgetting. this function is used both to obtain a dataset containing
-    only some identities/images, or to obtain a dataset containing all iamges in celeba apart from certain
-    identities/images. See documnetaion of CelebAPArtial for more details.
-    """
-    ds = CelebAPartial(root=CELEBA_ROOT, transform=transform, target_type="identity", **kwargs)
-    print("len of dataset: ", len(ds))
-    return ds
+def make_forget_exp_dir(exp_name, exist_ok=False, dir_name="forget") -> str:
+    base_path = os.path.join("experiments", dir_name, exp_name)
+    os.makedirs(f'{base_path}/checkpoints', exist_ok=exist_ok)
+    os.makedirs(f'{base_path}/wandb', exist_ok=exist_ok)
+    return os.path.join(dir_name, exp_name)
 
 
 def get_data_iterator(ds: CelebAPartial, batch_size, num_workers=16) -> Iterator:
@@ -41,9 +38,11 @@ def get_data_iterator(ds: CelebAPartial, batch_size, num_workers=16) -> Iterator
             yield next(dl_iter)
 
 
-def calc_batch_bpd(args, model, batch):
+def calc_batch_bpd(args, model, batch, reduce=True) -> Union[float, torch.Tensor]:
     """
     Calculates the batch-wise BPD of the model.
+    :param reduce: if reduce is true, return a sclar value that is the mean of the batch-wise BPDs, if it is false,
+    return the per example contriubtion to the BPD, meaning reduced_bpd = sum(unreduced_bpd) / batch_size
     :param args: arguments relevant to the model's parameters and input image size.
     :param model: model to calculate the BPD with.
     :param batch: batch to calculate the BPD of.
@@ -53,8 +52,13 @@ def calc_batch_bpd(args, model, batch):
     M = args.img_size * args.img_size * 3
     with torch.no_grad():
         log_p, logdet, _ = model(batch)
-    cur_nll = - torch.sum(log_p + logdet.mean()).item() / batch.shape[0]
+    if reduce:
+        cur_nll = - torch.sum(log_p + logdet.mean()).item() / batch.shape[0]
+    else:
+        cur_nll = - (log_p + logdet.mean())
+
     cur_bpd = (cur_nll + (M * math.log(n_bins))) / (math.log(2) * M)
+
     return cur_bpd
 
 
@@ -86,7 +90,7 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, de
         loss.backward()
         optimizer.step()
 
-        cur_ref_bpd = calc_batch_bpd(args, model, cur_batch.detach().clone())
+        cur_ref_bpd = calc_batch_bpd(args, model, ref_batch)
 
         wandb.log({f"{loss_name}": {"loss": loss.item(),
                                     "bpd": cur_ref_bpd,
@@ -97,11 +101,11 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Glow, de
                    })
 
         if loss_name == "forget" and cur_ref_bpd >= (args.base_forget_bpd * args.forget_thresh):
-            print("breaking after {} iterations".format(i + 1))
+            logging.info("breaking after {} iterations".format(i + 1))
             wandb.log({f"achieved_thresh": i + 1})
             break
 
-        print(
+        logging.info(
             f"Iter: {i + 1} Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; "
         )
 
@@ -116,15 +120,15 @@ def save_forget_checkpoint(args, forget_optimizer, iter_num, model, remember_opt
     else:
         model_id = str(iter_num + 1).zfill(6)
     torch.save(
-        model.state_dict(), f'experiments/forget/{args.exp_name}/checkpoints/model_{model_id}.pt'
+        model.state_dict(), f'experiments/{args.exp_name}/checkpoints/model_{model_id}.pt'
     )
     torch.save(
         forget_optimizer.state_dict(),
-        f'experiments/forget/{args.exp_name}/checkpoints/forget_optim_{model_id}.pt'
+        f'experiments/{args.exp_name}/checkpoints/forget_optim_{model_id}.pt'
     )
     torch.save(
         remember_optimizer.state_dict(),
-        f'experiments/forget/{args.exp_name}/checkpoints/regular_optim_{model_id}.pt'
+        f'experiments/{args.exp_name}/checkpoints/regular_optim_{model_id}.pt'
     )
 
 
@@ -196,11 +200,11 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer, ref_b
                    f"ref_bpd": cur_ref_bpd})
 
         if cur_ref_bpd >= (args.base_forget_bpd * args.forget_thresh):
-            print("breaking after {} iterations".format(i + 1))
+            logging.info("breaking after {} iterations".format(i + 1))
             wandb.log({f"achieved_thresh": i + 1})
             break
 
-        print(
+        logging.info(
             f"Iter: {i + 1} Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f};")
 
         if (i + 1) % args.save_every == 0:
@@ -216,10 +220,11 @@ def get_reference_batch(args, transform, device):
 
 def main():
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
+    logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    args.exp_name = make_exp_dir(args.exp_name, exist_ok=False, forget=True)
-    print(args)
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget")
+    logging.info(args)
     model: torch.nn.DataParallel = load_model(args, device, training=True)
     transform = Compose([Resize((args.img_size, args.img_size)),
                          RandomHorizontalFlip(),
@@ -228,21 +233,21 @@ def main():
     forget_iter = args2data_iter(args, ds_type='forget', transform=transform)
     first_batch = next(forget_iter)[0]
     args.base_forget_bpd = calc_batch_bpd(args, model, first_batch.to(device))
-    print("base forget bpd: ", args.base_forget_bpd)
+    logging.info("base forget bpd: ", args.base_forget_bpd)
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     ref_batch = get_reference_batch(args, transform, device)
     if args.forget_baseline:
         wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
-                   dir=f'experiments/forget/{args.exp_name}/wandb')
-        save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
+                   dir=f'experiments/{args.exp_name}/wandb')
+        save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
         forget_baseline(forget_iter, args, model, device, forget_optimizer, ref_batch)
     else:
         remember_iter = args2data_iter(args, ds_type='remember', transform=transform)
         # args.base_remember_bpd = 0.609  # constant derived from the mean of BPD across all of celeba train
         # args.base_remember_std = 0.033  # constant derived from the std of BPD across all of celeba train
         wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
-                   dir=f'experiments/forget/{args.exp_name}/wandb')
-        save_dict_as_json(args, f'experiments/forget/{args.exp_name}/args.json')
+                   dir=f'experiments/{args.exp_name}/wandb')
+        save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
         remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         forget(args, remember_iter, forget_iter, model, device, forget_optimizer, remember_optimizer, ref_batch)
 

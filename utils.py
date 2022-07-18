@@ -1,9 +1,10 @@
 import math
+import logging
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
-from typing import Union, Dict, Type
+from typing import Union
 from matplotlib import pyplot as plt
 from torchvision.transforms import Normalize
-
+from datasets import CelebAPartial
 from model import Glow
 import torch
 from easydict import EasyDict
@@ -90,19 +91,6 @@ def get_args(**kwargs) -> EasyDict:
     return EasyDict(out_dict)
 
 
-def make_exp_dir(exp_name, exist_ok=False, forget=False) -> str:
-    if not exp_name:
-        exp_name = chr(random.randint(97, ord('z'))) + chr(random.randint(97, ord('z')))
-    if forget:
-        os.makedirs(f"experiments/forget/{exp_name}", exist_ok=exist_ok)
-        os.makedirs(f'experiments/forget/{exp_name}/checkpoints', exist_ok=exist_ok)
-        os.makedirs(f'experiments/forget/{exp_name}/wandb', exist_ok=exist_ok)
-    else:
-        os.makedirs(f'experiments/{exp_name}/samples', exist_ok=exist_ok)
-        os.makedirs(f'experiments/{exp_name}/checkpoints', exist_ok=exist_ok)
-    return exp_name
-
-
 def save_dict_as_json(save_dict, save_path):
     with open(save_path, 'w') as out_j:
         json.dump(save_dict, out_j, indent=4)
@@ -137,7 +125,7 @@ def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, datase
 def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=None, **kwargs):
     if dataset is None:
         dataset = get_dataset(data_root_path, image_size, **kwargs)
-    print("loading Data Set of size: ", len(dataset))
+    logging.info(f"loading Data Set of size: {len(dataset)}")
     loader = get_dataloader(data_root_path, batch_size, image_size, num_workers, dataset=dataset)
     loader = iter(loader)
 
@@ -341,3 +329,14 @@ def get_resnet_50_normalization():
     :return:
     """
     return Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+
+
+def get_partial_dataset(transform, target_type='identity', **kwargs) -> CelebAPartial:
+    """
+    Used for datasets when performing censoring/forgetting. this function is used both to obtain a dataset containing
+    only some identities/images, or to obtain a dataset containing all iamges in celeba apart from certain
+    identities/images. See documnetaion of CelebAPArtial for more details.
+    """
+    ds = CelebAPartial(root=CELEBA_ROOT, transform=transform, target_type=target_type, **kwargs)
+    logging.info(f"len of dataset: {len(ds)}")
+    return ds
