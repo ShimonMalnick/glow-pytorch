@@ -2,7 +2,7 @@ import json
 import os
 from time import time
 import logging
-from typing import Iterable, Dict, Optional
+from typing import Dict, Optional, Iterator
 
 import wandb
 from easydict import EasyDict
@@ -194,7 +194,7 @@ def analyze_glow_attributes(n_samples, save_path, ckpt_path=GLOW_BASELINE_CKPT):
             "n_block": 4,
             "affine": False,
             "no_lu": False,
-            "batch": 32,
+            "batch": 256,
             "temp": 0.7}
     args = EasyDict(args)
     glow: Glow = load_model(args, device, training=False)
@@ -216,6 +216,7 @@ def analyze_glow_attributes(n_samples, save_path, ckpt_path=GLOW_BASELINE_CKPT):
             total += out.shape[0]
             positive_glasses += torch.sum(out[:, GLASSES_IDX] >= 0.5).item()
             positive_males += torch.sum(out[:, MALE_IDX] >= 0.5).item()
+        logging.info(f"{i + 1}/{n_iter}")
     data = {"total": total,
             "positive males": positive_males,
             "positive glasses": positive_glasses,
@@ -240,7 +241,7 @@ def get_celeba_attributes_indices(split='train', save_dir='attribute_classifier'
     save_dict_as_json(data, f"{save_dir}/attributes_indices.json")
 
 
-def get_attribute_data_iter(args, transform, include_attribute=True, ds_len: Optional[Dict] = None) -> Iterable:
+def get_attribute_data_iter(args, transform, include_attribute=True, ds_len: Optional[Dict] = None) -> Iterator:
     with open(ATTRIBUTES_INDICES_PATH, "r") as f:
         attributes_indices = json.load(f)
     assert args.forget_attribute in ['male', 'glasses']
