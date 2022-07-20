@@ -6,7 +6,9 @@ import logging
 import numpy as np
 from matplotlib import pyplot as plt
 from torchvision.datasets import CelebA
-from utils import get_args, save_dict_as_json, load_model, compute_dataloader_bpd, quantize_image, CELEBA_ROOT
+from torchvision.utils import save_image
+from utils import get_args, save_dict_as_json, load_model, compute_dataloader_bpd, quantize_image, CELEBA_ROOT, \
+    compute_dataset_bpd
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -17,25 +19,38 @@ from typing import Iterable, Tuple, Dict, List
 from datasets import CelebAPartial, ForgetSampler
 
 
-def eval_model(dataloaders: Iterable[Tuple[str, DataLoader]], n_bits: int, model, device, img_size: int = 128,
+def eval_model(dset_tuples: Iterable[Tuple[str, Dataset]], n_bits: int, model, device, img_size: int = 128,
                **kwargs) -> dict:
     n_bins = 2 ** n_bits
     data = {}
     start = time()
-    for name, dl in dataloaders:
-        cur_bpd = compute_dataloader_bpd(n_bins, img_size, model, device, dl)
-        data[name] = cur_bpd
-        print(f'{name} done in {time() - start}')
+    for name, dataset in dset_tuples:
+        if 'reduce' in kwargs:
+            reduce = kwargs['reduce']
+            cur_bpd = compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=reduce)
+            if not reduce:
+                data[name] = {'bpd': cur_bpd.mean().item(),
+                              'bpd_std': cur_bpd.std().item(),
+                              'bpd_min': cur_bpd.min().item(),
+                              'bpd_max': cur_bpd.max().item(),
+                              'values': cur_bpd.tolist()}
+            else:
+                data[name] = cur_bpd
+        else:
+            cur_bpd = compute_dataset_bpd(n_bins, img_size, model, device, dataset)
+            data[name] = cur_bpd
+        logging.info(f'{name} done in {time() - start}')
         start = time()
-    if 'save_dir' in kwargs:
-        save_dir = kwargs['save_dir']
-        save_dict_as_json(data, f'{save_dir}/bpd.json')
+    # if 'save_dir' in kwargs:
+    #     save_dir = kwargs['save_dir']
+    #     save_dict_as_json(data, f'{save_dir}/bpd.json')
     return data
 
 
-def eval_models(ckpts: Iterable[Tuple[str, str]], args: Dict, dsets: Iterable[Tuple[str, Dataset]], **kwargs):
+def eval_models(ckpts: Iterable[Tuple[str, str]], args: Dict, dsets_tuples: Iterable[Tuple[str, Dataset]], **kwargs):
     """
     Used for Evaluation of multiple models on the same data sets
+    :param dsets_tuples:
     :param dsets: tuples of (name, ds) where ds is a dataset and name is the corresponding name of that data.
     :param ckpts: list of tuples of (ckpt, names) where ckpt is a path to a checkpoint and name is the corresponding
      model name
@@ -44,20 +59,12 @@ def eval_models(ckpts: Iterable[Tuple[str, str]], args: Dict, dsets: Iterable[Tu
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data = {}
-    dataloaders = []
-    for name, ds in dsets:
-        if len(ds) < args.batch:
-            sampler = ForgetSampler(ds, args.batch)
-        else:
-            sampler = None
-        dl = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=8, sampler=sampler)
-        dataloaders.append((name, dl))
     start = time()
     for name, ckpt in ckpts:
         args.ckpt_path = ckpt
         model: Glow = load_model(args, device, training=False)
         model.eval()
-        data[name] = eval_model(dataloaders, args.n_bits, model, device, img_size=args.img_size)
+        data[name] = eval_model(dsets_tuples, args.n_bits, model, device, img_size=args.img_size, **kwargs)
         print(f'{name} done in {time() - start}')
         start = time()
     if 'save_path' in kwargs:
@@ -189,7 +196,6 @@ def plot_similarity_vs_bpd(save_path: str, bpd_json: str,
         data = [(bpd_dict[k], similarity_dict[k]) for k in bpd_dict.keys() if bpd_dict[k] < outliers_thresh]
     else:
         data = [(bpd_dict[k], similarity_dict[k]) for k in bpd_dict.keys()]
-
     if distance:
         data = [(d[0], 1 - d[1]) for d in data]  # cosine_distance = 1 - cosine_similarity
 
@@ -247,20 +253,52 @@ def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stat
 
 
 if __name__ == '__main__':
-    folders = glob("experiments/forget/*")
-    baseline_folder = glob("experiments/forget/baseline*")
-    regular_folders = list(set(folders) - set(baseline_folder))
-    save_path = 'outputs/forget_bpd/forget.json'
-    base_image_folder = "/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities"
-    image_folders = [f"{base_image_folder}/1_{p}/train/images" for p in ["first", "second"]]
-    # run_eval_on_models(regular_folders, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path)
+    logging.getLogger().setLevel(logging.INFO)
+    # folders = glob("experiments/forget/*")
+    # baseline_folder = glob("experiments/forget/baseline*")
+    # regular_folders = list(set(folders) - set(baseline_folder))
+    # save_path = 'outputs/forget_bpd/forget.json'
+    # base_image_folder = "/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities"
+    # image_folders = [f"{base_image_folder}/1_{p}/train/images" for p in ["first", "second"]]
+    # run_eval_on_models(regular_folders, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path, reduce=False)
     # run_eval_on_models_on_images(regular_folders, images_folders=image_folders, names=["forget_split", "unseen_split"],
-    #                              save_path=save_path)
-    compute_similarity_vs_bpd(regular_folders, step=20)
-    for p in regular_folders:
-        plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity.png', f'{p}/bpd_vs_similarity.json')
-        plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity_wo_outliers.png', f'{p}/bpd_vs_similarity.json',
-                               outliers_thresh=50)
+    #                              save_path=save_path, reduce=False)
+    # compute_similarity_vs_bpd(regular_folders, step=20)
+    # logging.getLogger().setLevel(logging.DEBUG)
+
+    ff = ['experiments/forget/all_images']
+    args = get_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(args, device, training=False)
+    transform = Compose([Resize((args.img_size, args.img_size)),
+                         ToTensor(),
+                         lambda img: quantize_image(img, args.n_bits)])
+    id_ds = CelebAPartial(root=CELEBA_ROOT, target_type='identity', split='train', include_only_identities=[10021],
+                          transform=transform)
+    # print(compute_dataset_bpd(2 ** 5, 128, model, device, id_ds, reduce=False))
+    one_image_ds = Subset(id_ds, [len(id_ds) - 1])
+    log_p, log_det, _ = model(one_image_ds[0][0].unsqueeze(0).to(device))
+    print(log_p)
+    print(log_det)
+    #
+    log_p2, log_det2, _ = model(id_ds[0][0].unsqueeze(0).to(device))
+    print(log_p2)
+    print(log_det2)
+    exit()
+    # save_image(one_image_ds[0][0] + 0.5, 'bad_image_10021.png')
+    # exit()
+    # bpd = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, id_ds, reduce=False)
+    # bpd_reduced = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, id_ds, reduce=True)
+    # one_image_bpd = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, one_image_ds, reduce=True)
+    # one_image_bpd_reduced = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, one_image_ds, reduce=False)
+    # print(bpd.mean())
+    # print(bpd)
+    # print(bpd_reduced)
+    # print(one_image_bpd)
+    # print(one_image_bpd_reduced)
+    # for p in regular_folders:
+    # for p in ff:
+    #     plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity.png', f'{p}/bpd_vs_similarity.json')
 
     # save_path = 'outputs/forget_bpd/forget_naive.json'
     # run_eval_on_models(baseline_folder, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path)
