@@ -3,7 +3,7 @@ import logging
 import math
 import os
 from glob import glob
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Union
 from PIL import Image
 import numpy as np
 import torch
@@ -183,6 +183,8 @@ def get_identity2identities_sim(chosen_images: List[str],
         cur_sim = compute_cosine_similarity(chosen_embeddings, cur_embeddings, mean=True)
         similarities[cur_id] = cur_sim.item()
         logging.info(f"Finished {idx}/{len(identities2indices)}")
+
+    similarities = {k: v for k, v in sorted(similarities.items(), key=lambda item: item[1])}
     save_dict_as_json(similarities, save_path)
 
 
@@ -239,20 +241,28 @@ def compute_celeba_identity2indices(save_path='outputs/celeba_stats/identity2ind
     save_dict_as_json(identity2indices, save_path)
 
 
-def plot_identity_neighbors(neighbors_index: List[int], chosen_id: int = 1,
-                            save_path='outputs/identity_1/neighbors.png'):
+def plot_identity_neighbors(neighbors_index: List[int], chosen_id: Union[int, str] = "1_first",
+                            save_path='outputs/identity_1_first/neighbors.png',
+                            similaririty_path='outputs/celeba_stats/1_first_similarities.json'):
     """
     Given an identity from celeba, plot neighbors of that identities according to given distance indices
+    :param similaririty_path:
     :param save_path: save path of the plot.
     :param neighbors_index: the indices of identities, meaning if idx = 1 we will choose the nearest neighbor of id1,
     if idx = -1 the furthest identity from id1, etc.
     :param chosen_id: the identity to plot neighbors
     """
+    save_dir = os.path.dirname(save_path)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    if isinstance(chosen_id, str):
+        chosen_id_dir = f"/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities/{chosen_id}/train/images"
+        assert os.path.isdir(chosen_id_dir)
     similarities: List[Tuple[int, float]]
     identity2indices: Dict[str, List[int]]
     with open("outputs/celeba_stats/identity2indices.json", "r") as f:
         identity2indices = json.load(f)
-    with open("outputs/celeba_stats/1_similarities.json", "r") as f:
+    with open(similaririty_path, "r") as f:
         similarities = list(reversed([(int(k), v) for k, v in json.load(f).items()]))
     assert all([abs(i) < len(similarities) for i in neighbors_index]), "found neighbors index out of range"
     n_neighbors = len(neighbors_index)
@@ -280,7 +290,12 @@ def plot_identity_neighbors(neighbors_index: List[int], chosen_id: int = 1,
         return idx if idx >= 0 else arr_len + idx
 
     # plot identity
-    id_image = identity2image(chosen_id)
+    if isinstance(chosen_id, int):
+        id_image = identity2image(chosen_id)
+    elif isinstance(chosen_id, str):
+        id_image = Image.open(glob(f"{chosen_id_dir}/*")[0])
+    else:
+        raise ValueError(f"chosen_id must be int or str, got {type(chosen_id)}")
     ax = fig.add_subplot(n_rows, n_cols, 1)
     ax.imshow(id_image)
     ax.title.set_text(f"id: {chosen_id}")
@@ -302,7 +317,14 @@ def plot_identity_neighbors(neighbors_index: List[int], chosen_id: int = 1,
 
 
 if __name__ == '__main__':
-    logging.getLogger().setLevel(logging.INFO)
-    images = glob("/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities/1_first/train/images/*")
-    get_identity2identities_sim(images)
+    for i in range(3, 7):
+        plot_identity_neighbors([1, 2, 3, 4, 5, 10, 20, -20, -10, -5, -4, -3, -2, -1], save_path=f"outputs/identity_1_first/{i}neighbors.png")
+    exit(1)
+    bpds = torch.load("outputs/baseline_stats/all_images_bpd.pt").cpu()
+    data = {"mean": bpds.mean().item(), "std": bpds.std().item(), "min": bpds.min().item(), "max": bpds.max().item(),
+            "median": torch.median(bpds).item()}
+    save_dict_as_json(data, "outputs/baseline_stats/all_images_bpd.json")
 
+    pass
+    # logging.getLogger().setLevel(logging.INFO)
+    # images = glob("/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities/1_first/train/images/*")
