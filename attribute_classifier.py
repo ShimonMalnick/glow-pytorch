@@ -3,7 +3,6 @@ import os
 from time import time
 import logging
 from typing import Dict, Optional, Iterator
-
 import wandb
 from easydict import EasyDict
 from torch.utils.data import DataLoader
@@ -18,12 +17,9 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from model import Glow
 from train import calc_z_shapes
-from forget import make_forget_exp_dir, quantize_image, get_data_iterator, calc_batch_bpd
+from forget import make_forget_exp_dir, get_data_iterator, calc_batch_bpd, get_default_forget_transform
 from forget import forget as vanilla_forget
 from forget import forget_baseline as vanilla_forget_baseline
-
-os.environ[
-    'TORCH_HOME'] = '/home/yandex/AMNLP2021/malnick/.cache/torch/'  # save resnet50 checkpoint under this directory
 
 # Constants #
 # adjustment for the loss on imbalanced dataset
@@ -31,8 +27,7 @@ CELEBA_MALE_FRACTION = (202599 - 84434) / 84434
 CELEBA_GLASSES_FRACTION = (202599 - 13193) / 13193
 GLASSES_IDX = 0
 MALE_IDX = 1
-GLOW_BASELINE_CKPT = "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/outputs/best_model" \
-                     "/continue_celeba/model_090001.pt "
+GLOW_BASELINE_CKPT = "models/baseline/continue_celeba/model_090001.pt "
 ATTRIBUTES_INDICES_PATH = "attribute_classifier/attributes_indices.json"
 
 
@@ -113,7 +108,7 @@ def get_dataset(split='train'):
     return ds
 
 
-def load_classifier(ckpt_path='attribute_classifier/checkpoints/train/epoch=5-step=7632.ckpt', device=None):
+def load_classifier(ckpt_path='models/attribute_classifier/epoch=5-step=7632.ckpt', device=None):
     classifier = TwoAttributesClassifier.load_from_checkpoint(ckpt_path)
     if device is not None:
         classifier = classifier.to(device)
@@ -274,10 +269,7 @@ def forget_attribute():
     args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_attribute")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, device, training=True)
-    transform = Compose([Resize((args.img_size, args.img_size)),
-                         RandomHorizontalFlip(),
-                         ToTensor(),
-                         lambda img: quantize_image(img, args.n_bits)])
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
     extra_args = {}
     forget_iter = get_attribute_data_iter(args, transform, include_attribute=True, ds_len=extra_args)
     first_batch = next(forget_iter)[0]
@@ -298,4 +290,5 @@ def forget_attribute():
 
 
 if __name__ == '__main__':
-    forget_attribute()
+    pass
+

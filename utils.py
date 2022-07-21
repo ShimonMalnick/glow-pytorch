@@ -15,8 +15,8 @@ from arcface_model import Backbone
 from torchvision.models import resnet50
 
 # Constants
-CELEBA_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/celebA'
-FFHQ_ROOT = '/home/yandex/AMNLP2021/malnick/datasets/ffhq-128'
+CELEBA_ROOT = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA"
+FFHQ_ROOT = '/a/home/cc/students/cs/malnick/thesis/datasets/ffhq-128'
 CELEBA_NUM_IDENTITIES = 10177
 CELEBA_MALE_ATTR_IDX = 20
 CELEBA_GLASSES_ATTR_IDX = 15
@@ -320,7 +320,7 @@ def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False) -> N
 def load_arcface(device=None) -> Backbone:
     model = Backbone(50, 0.6, 'ir_se').to('cpu')
     model.requires_grad_(False)
-    cls_ckpt = "/home/yandex/AMNLP2021/malnick/arcface_data/models/model_ir_se50.pth"
+    cls_ckpt = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/arcface/model_ir_se50.pth"
     model.load_state_dict(torch.load(cls_ckpt, map_location='cpu'))
     if device:
         model = model.to(device)
