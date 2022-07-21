@@ -51,7 +51,8 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument('--sample_name', help='Name of sample size in case of evaluation')
     parser.add_argument('--exp_name', help='Name experiment for saving dirs')
     parser.add_argument('--num_workers', help='Number of worker threads for dataloader', type=int)
-    parser.add_argument('--config', help='Name of json config file (optional) cmd will be overriden by file option')
+    parser.add_argument('--config', '-c',
+                        help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', help='number of gpu devices to use', type=int)
     parser.add_argument('--log_every', help='run heavy logs every <log_every> iterations', type=int)
     if kwargs.get('forget', False):
