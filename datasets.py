@@ -3,6 +3,7 @@ from torch.utils.data import Dataset, Sampler
 from PIL import Image
 import torch
 import torchvision.datasets as vision_datasets
+import random
 
 
 class ForgetSampler(Sampler):
@@ -16,15 +17,17 @@ class ForgetSampler(Sampler):
         self.data_source = data_source
         self.batch_size = batch_size
         self.reps = batch_size // len(data_source)
+        self.sequential = [i % len(self.data_source) for i in range(len(self.data_source) * self.reps)]
 
     def __len__(self):
         return self.batch_size
 
     def __iter__(self):
-        sequential_part = [i % len(self.data_source) for i in range(len(self.data_source) * self.reps)]
         remainder_part = torch.randint(low=0, high=len(self.data_source),
-                                       size=(self.batch_size - len(sequential_part), )).tolist()
-        return iter(sequential_part + remainder_part)
+                                       size=(self.batch_size - len(self.sequential), )).tolist()
+        indices = self.sequential + remainder_part
+        random.shuffle(indices)
+        return iter(indices)
 
 
 class CelebAPartial(vision_datasets.CelebA):
