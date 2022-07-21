@@ -97,7 +97,7 @@ def parse_line(line):
 
 
 def get_celeba_attributes_stats(
-        attr_file_path: str = '/home/yandex/AMNLP2021/malnick/datasets/celebA/celeba/list_attr_celeba.txt',
+        attr_file_path: str = f'{CELEBA_ROOT}/celeba/list_attr_celeba.txt',
         save_stats_path='outputs/celeba_stats/attributes_stats.json'):
     start_parse = time()
     with open(attr_file_path, 'r') as f:
