@@ -16,13 +16,10 @@ from collections import Counter
 from functools import reduce
 from utils import load_arcface, load_arcface_transform, save_dict_as_json
 import shutil
-from torchvision.utils import save_image
 from forget import get_partial_dataset
 import torchvision.datasets as vision_dsets
 from torchvision.transforms import ToTensor
-from datasets import CelebAPartial
 import matplotlib
-
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 

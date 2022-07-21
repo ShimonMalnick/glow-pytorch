@@ -3,16 +3,13 @@ import logging
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from typing import Union
 from matplotlib import pyplot as plt
-from torchvision.transforms import Normalize
+from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
 from datasets import CelebAPartial
 from model import Glow
 import torch
 from easydict import EasyDict
 import json
-import random
-import os
 import torchvision.datasets as vision_datasets
-from torchvision import transforms
 from torch.utils.data import DataLoader
 from arcface_model import Backbone
 from torchvision.models import resnet50
@@ -56,6 +53,7 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument('--num_workers', help='Number of worker threads for dataloader', type=int)
     parser.add_argument('--config', help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', help='number of gpu devices to use', type=int)
+    parser.add_argument('--log_every', help='run heavy logs every <log_every> iterations', type=int)
     if kwargs.get('forget', False):
         if kwargs.get('forget_attribute', False):
             parser.add_argument('--forget_attribute', help='which attribute to forget', choices=['male', 'glasses'])
@@ -63,6 +61,7 @@ def get_args(**kwargs) -> EasyDict:
             parser.add_argument('--forget_images', help='path to images to forget')
             parser.add_argument('--forget_identity', help='Identity to forget', type=int)
             parser.add_argument('--forget_size', help='Number of images to forget', type=int)
+
         parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
         parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
         parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
@@ -102,12 +101,12 @@ def get_dataset(data_root_path, image_size, **kwargs):
     if 'transform' in kwargs:
         transform = kwargs['transform']
     else:
-        transform = transforms.Compose(
+        transform = Compose(
             [
-                transforms.Resize((image_size, image_size)),
-                # transforms.CenterCrop(image_size),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor()])
+                Resize((image_size, image_size)),
+                # CenterCrop(image_size),
+                RandomHorizontalFlip(),
+                ToTensor()])
     if 'celeba' in data_root_path.lower():
         assert 'data_split' in kwargs, 'data_split must be specified for celeba'
         if kwargs['data_split']:
@@ -179,7 +178,8 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
     return bpd
 
 
-def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader, reduce=True) -> Union[float, torch.Tensor]:
+def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoader, reduce=True)\
+        -> Union[float, torch.Tensor]:
     """
     Computation of bits per dimension as done in Glow, meaning we:
     - compute the negative log likelihood of the data
@@ -200,6 +200,9 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader, reduce=
         x = x.to(device)
         with torch.no_grad():
             log_p, logdet, _ = model(x)
+
+            #added next line due to instability
+            logdet = logdet.mean()
         if reduce:
             nll -= torch.sum(log_p + logdet).item()
         else:
@@ -222,6 +225,7 @@ def load_model(args, device, training=False) -> Union[Glow, torch.nn.DataParalle
     model = torch.nn.DataParallel(model_single)
     model.load_state_dict(torch.load(args.ckpt_path, map_location=lambda storage, loc: storage))
     model.to(device)
+    logging.debug("Loaded model successfully")
     if training:
         return model
     else:
@@ -324,11 +328,11 @@ def load_arcface(device=None) -> Backbone:
 
 
 def load_arcface_transform():
-    return transforms.Compose([transforms.Resize((112, 112)),
-                            transforms.ToTensor(),
-                            transforms.Normalize((0.5, 0.5, 0.5),
-                                                 (0.5, 0.5,
-                                                  0.5))])
+    return Compose([Resize((112, 112)),
+                    ToTensor(),
+                    Normalize((0.5, 0.5, 0.5),
+                              (0.5, 0.5,
+                               0.5))])
 
 
 def compute_cosine_similarity(e1, e2, mean=False) -> torch.Tensor:
@@ -392,3 +396,12 @@ def get_partial_dataset(transform, target_type='identity', **kwargs) -> CelebAPa
     ds = CelebAPartial(root=CELEBA_ROOT, transform=transform, target_type=target_type, **kwargs)
     logging.info(f"len of dataset: {len(ds)}")
     return ds
+
+
+def get_default_forget_transform(img_size, n_bits) -> Compose:
+    transform = Compose([Resize((img_size, img_size)),
+                         # RandomHorizontalFlip(),
+                         ToTensor(),
+                         lambda img: quantize_image(img, n_bits)])
+
+    return transform

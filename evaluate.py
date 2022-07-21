@@ -4,19 +4,20 @@ import re
 from time import time
 import logging
 import numpy as np
-from matplotlib import pyplot as plt
 from torchvision.datasets import CelebA
-from torchvision.utils import save_image
-from utils import get_args, save_dict_as_json, load_model, compute_dataloader_bpd, quantize_image, CELEBA_ROOT, \
-    compute_dataset_bpd
+from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
+    compute_dataset_bpd, get_default_forget_transform, compute_dataloader_bpd
 import os
+from forget import args2dataset
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
-from torchvision.transforms import Compose, RandomHorizontalFlip, ToTensor, Resize
 from glob import glob
 from model import Glow
 from typing import Iterable, Tuple, Dict, List
-from datasets import CelebAPartial, ForgetSampler
+from datasets import CelebAPartial
+import matplotlib
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
 
 
 def eval_model(dset_tuples: Iterable[Tuple[str, Dataset]], n_bits: int, model, device, img_size: int = 128,
@@ -87,11 +88,7 @@ def run_eval_on_models_on_images(folders: List[str], images_folders: List[str], 
     assert folders and images_folders
     args = get_args(forget=True)
     ckpts = [(os.path.basename(os.path.normpath(folder)), f"{folder}/checkpoints/model_last.pt") for folder in folders]
-
-    transform = Compose([Resize((args.img_size, args.img_size)),
-                         RandomHorizontalFlip(),
-                         ToTensor(),
-                         lambda img: quantize_image(img, args.n_bits)])
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
     dsets = [(name, CelebAPartial(root=CELEBA_ROOT, transform=transform, target_type='identity', split='train',
                                   include_only_images=os.listdir(folder))) for name, folder in
              zip(names, images_folders)]
@@ -111,10 +108,7 @@ def run_eval_on_models(folders: List[str], dsets_identities: List[int], **kwargs
     args = get_args(forget=True)
     ckpts: List[Tuple[str, str]] = []
     dsets: List[Tuple[str, Dataset]] = []
-    transform = Compose([Resize((args.img_size, args.img_size)),
-                         RandomHorizontalFlip(),
-                         ToTensor(),
-                         lambda img: quantize_image(img, args.n_bits)])
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
     base_ds = CelebA(root=CELEBA_ROOT, transform=transform, target_type='identity', split='train')
     with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
         identity2indices = json.load(f)
@@ -163,11 +157,7 @@ def compute_similarity_vs_bpd(folders: List[str], similarities_json: str = 'outp
         model: Glow = load_model(args, torch.device("cuda" if torch.cuda.is_available() else "cpu"), training=False)
         model.eval()
         dsets: List[Tuple[str, Dataset]] = []
-        transform = Compose([Resize((args.img_size, args.img_size)),
-                             RandomHorizontalFlip(),
-                             ToTensor(),
-                             lambda img: quantize_image(img, args.n_bits)])
-
+        transform = get_default_forget_transform(args.img_size, args.n_bits)
         base_ds = CelebA(root=CELEBA_ROOT, transform=transform, target_type='identity', split='train')
         with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
             identity2indices = json.load(f)
@@ -222,10 +212,7 @@ def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stat
     args = get_args(forget=True)
     model: Glow = load_model(args, device, training=False)
     bpds = []
-    transform = Compose([Resize((args.img_size, args.img_size)),
-                         RandomHorizontalFlip(),
-                         ToTensor(),
-                         lambda img: quantize_image(img, args.n_bits)])
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
     ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
 
@@ -253,7 +240,31 @@ def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stat
 
 
 if __name__ == '__main__':
+    # wandb.init(project='tmp-debug', name=f'hist_{torch.randint(20, (1,)).item()}', entity="malnick")
     logging.getLogger().setLevel(logging.INFO)
+    args = get_args(forget=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(args, device, training=False)
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
+    base_ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
+    for i in range(1):
+        remember_ds = args2dataset(args, ds_type='remember', transform=transform)
+        rand_indices = torch.randperm(len(remember_ds))[:1024]
+        subset_remember_ds = Subset(remember_ds, rand_indices)
+        eval_dl = DataLoader(subset_remember_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
+
+        bpds = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, eval_dl, reduce=False)
+        print("here")
+        exit()
+        plt.hist(bpds.detach().cpu().numpy(), bins=100)
+        plt.savefig(f"outputs/baseline_stats/1024_images/hist_{i}.png")
+        # plt.savefig(f'outputs/baseline_stats/5120_random_subset/all_bpd_hist_tmp_{i}.png')
+        # wandb.log({"histogram": wandb.Image(f'outputs/baseline_stats/5120_random_subset/all_bpd_hist_tmp_{i}.png')})
+        # logging.info(f'Total took: {time() - before} seconds')
+
+    # plt.hist(bpds.detach().cpu().numpy(), bins=100)
+    # plt.savefig('outputs/baseline_stats/5120_random_subset/all_bpd_hist.png')
+    # torch.save(bpds, 'outputs/baseline_stats/5120_random_subset/all_bpd.pt')
     # folders = glob("experiments/forget/*")
     # baseline_folder = glob("experiments/forget/baseline*")
     # regular_folders = list(set(folders) - set(baseline_folder))
@@ -263,50 +274,4 @@ if __name__ == '__main__':
     # run_eval_on_models(regular_folders, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path, reduce=False)
     # run_eval_on_models_on_images(regular_folders, images_folders=image_folders, names=["forget_split", "unseen_split"],
     #                              save_path=save_path, reduce=False)
-    # compute_similarity_vs_bpd(regular_folders, step=20)
-    # logging.getLogger().setLevel(logging.DEBUG)
 
-    ff = ['experiments/forget/all_images']
-    args = get_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(args, device, training=False)
-    transform = Compose([Resize((args.img_size, args.img_size)),
-                         ToTensor(),
-                         lambda img: quantize_image(img, args.n_bits)])
-    id_ds = CelebAPartial(root=CELEBA_ROOT, target_type='identity', split='train', include_only_identities=[10021],
-                          transform=transform)
-    # print(compute_dataset_bpd(2 ** 5, 128, model, device, id_ds, reduce=False))
-    one_image_ds = Subset(id_ds, [len(id_ds) - 1])
-    log_p, log_det, _ = model(one_image_ds[0][0].unsqueeze(0).to(device))
-    print(log_p)
-    print(log_det)
-    #
-    log_p2, log_det2, _ = model(id_ds[0][0].unsqueeze(0).to(device))
-    print(log_p2)
-    print(log_det2)
-    exit()
-    # save_image(one_image_ds[0][0] + 0.5, 'bad_image_10021.png')
-    # exit()
-    # bpd = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, id_ds, reduce=False)
-    # bpd_reduced = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, id_ds, reduce=True)
-    # one_image_bpd = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, one_image_ds, reduce=True)
-    # one_image_bpd_reduced = compute_dataset_bpd(2 ** args.n_bits, args.img_size, model, device, one_image_ds, reduce=False)
-    # print(bpd.mean())
-    # print(bpd)
-    # print(bpd_reduced)
-    # print(one_image_bpd)
-    # print(one_image_bpd_reduced)
-    # for p in regular_folders:
-    # for p in ff:
-    #     plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity.png', f'{p}/bpd_vs_similarity.json')
-
-    # save_path = 'outputs/forget_bpd/forget_naive.json'
-    # run_eval_on_models(baseline_folder, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path)
-    # run_eval_on_models_on_images(baseline_folder, images_folders=image_folders, names=["forget_split", "unseen_split"],
-    #                              save_path=save_path)
-    # compute_similarity_vs_bpd(folders, step=20)
-    # base_path = "/home/yandex/AMNLP2021/malnick/glow_repos/glow-pytorch-rosinality/experiments/forget/1_image_thresh_1e4"
-    # for p in folders:
-    #     plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity.png', f'{p}/bpd_vs_similarity.json')
-    #     plot_similarity_vs_bpd(f'{p}/bpd_vs_similarity_wo_outliers.png', f'{p}/bpd_vs_similarity.json', outliers_thresh=50)
-    # plot_similarity_vs_bpd(f"{base_path}/bpd_vs_similarity.png", f"{base_path}/bpd_vs_similarity.json")
