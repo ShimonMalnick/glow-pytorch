@@ -71,6 +71,9 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--forget_thresh', help='Threshold on forgetting procedure. when BPD of a batch of forget '
                                                     'images reaches more then base_bpd * forget_thresh, the finetuning '
                                                     'is stopped.', type=float)
+        parser.add_argument('--num_ref_batches', help='number of reference batches from the remember data', type=int)
+        parser.add_argument('--adaptive_loss', action='store_true', help='Whether to use adaptive loss weights for the '
+                                                                         'forget examples', default=None)
 
     args = parser.parse_args()
     out_dict = EasyDict()

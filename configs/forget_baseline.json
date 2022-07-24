@@ -1,6 +1,6 @@
 {
     "batch": 32,
-    "iter": 200,
+    "iter": 50,
     "n_flow": 32,
     "n_block": 4,
     "no_lu": false,
@@ -17,6 +17,8 @@
     "forget_every": null,
     "log_every": 10,
     "save_every": 10000,
-    "forget_thresh": 1e2,
+    "forget_thresh": 10.0,
+    "num_ref_batches": 3,
+    "adaptive_loss": true,
     "forget_baseline": true
 }

@@ -1,6 +1,6 @@
 {
     "batch": 32,
-    "iter": 1200,
+    "iter": 300,
     "n_flow": 32,
     "n_block": 4,
     "no_lu": false,
@@ -17,8 +17,10 @@
     "forget_images": "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_first/train/images",
     "forget_size": 1,
     "forget_every": 3,
-    "log_every": 50,
+    "log_every": 25,
     "save_every": 10000,
-    "forget_thresh": 1e2,
+    "forget_thresh": 10.0,
+    "num_ref_batches": 3,
+    "adaptive_loss": true,
     "forget_baseline": false
 }
