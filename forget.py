@@ -25,7 +25,8 @@ def calc_forget_loss(log_p, logdet, image_size, n_bins, weights=None):
     loss = loss + logdet + log_p
 
     if weights is not None:
-        assert weights.shape == loss.shape
+        assert weights.shape == loss.shape, "weights and loss must have the same shape, but got weights shape {} " \
+                                            "and loss shape {}".format(weights.shape, loss.shape)
         loss = (-(loss * weights) / (log(2) * n_pixel)).sum()  # summing because weights are normalized to sum to 1
     else:
         loss = (-loss / (log(2) * n_pixel)).mean()
@@ -106,7 +107,8 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
             optimizer = remember_optimizer
         cur_batch = cur_batch.to(device)
         log_p, logdet, _ = model(cur_batch + torch.rand_like(cur_batch) / n_bins)
-
+        if args.adaptive_loss and loss_name == "forget":
+            loss_weights = compute_adaptive_weights(log_p, device=device, T=1e-6)
         logdet = logdet.mean()
 
         loss, log_p, log_det = calc_forget_loss(log_p, logdet, args.img_size, n_bins, weights=loss_weights)
@@ -118,8 +120,7 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
 
         # cur_ref_bpd = calc_batch_bpd(args, model, ref_batch)
         cur_forget_bpd = validation_step(args, i, model, device, eval_dl, eval_batches, forget_eval_data)
-        if args.adaptive_loss:
-            loss_weights = compute_adaptive_weights(cur_forget_bpd, device=device)
+
         wandb.log({f"{loss_name}": {"loss": loss.item(),
                                     "bpd": cur_forget_bpd.mean().item(),
                                     "log_p": log_p.item(),
@@ -243,9 +244,13 @@ def validation_step(args: EasyDict, step: int, model: torch.nn.Module, device, d
     return forget_bpd
 
 
-def compute_adaptive_weights(forget_bpd, device) -> torch.Tensor:
-    weights = 1.0 / forget_bpd
-    weights = F.softmax(weights, dim=0)
+def compute_adaptive_weights(log_p, device, T=1.0) -> torch.Tensor:
+    with torch.no_grad():
+        weights = 1.0 / log_p.detach().clone()
+        weights = F.softmax(weights / T, dim=0)
+    print("*" * 20)
+    print(weights)
+    print("*" * 20)
     return weights.to(device)
 
 
@@ -255,11 +260,15 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer,
                     forget_eval_data: Tuple[torch.Tensor, Dict]):
     n_bins = 2 ** args.n_bits
     loss_weights = torch.ones(args.batch, device=device) / args.batch if args.adaptive_loss else None
+    weights_cache = {"columns": [f"{i}" for i in range(1, args.batch + 1)], "data": []}
     for i in range(args.iter):
         cur_batch, _ = next(forget_iter)
         cur_batch = cur_batch.to(device)
         log_p, logdet, _ = model(cur_batch + torch.rand_like(cur_batch) / n_bins)
-
+        if args.adaptive_loss:
+            loss_weights = compute_adaptive_weights(log_p, device=device, T=1e-6)
+            weights_cache["data"].append(loss_weights.view(-1).tolist())
+            wandb.log({"forget_weights": wandb.Table(**weights_cache)}, commit=False)
         logdet = logdet.mean()
 
         loss, log_p, log_det = calc_forget_loss(log_p, logdet, args.img_size, n_bins, weights=loss_weights)
@@ -270,8 +279,7 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer,
         optimizer.step()
 
         forget_bpd = validation_step(args, i, model, device, eval_dl, eval_batches, forget_eval_data)
-        if args.adaptive_loss:
-            loss_weights = compute_adaptive_weights(forget_bpd, device=device)
+
         wandb.log({"loss": loss.item(),
                    "log_p": log_p.item(),
                    "log_det": log_det.item(),
@@ -288,8 +296,8 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer,
             f"\nforget_bpd: {forget_bpd}")
 
         if (i + 1) % args.save_every == 0:
-            save_model_optimizer(args, i, model, optimizer, save_prefix='experiments/forget')
-    save_model_optimizer(args, 0, model, optimizer, save_prefix='experiments/forget', last=True)
+            save_model_optimizer(args, i, model, optimizer, save_prefix='experiments')
+    save_model_optimizer(args, 0, model, optimizer, save_prefix='experiments', last=True)
 
 
 def get_random_batch(ds: Dataset, batch_size, device) -> Tuple[torch.Tensor, torch.Tensor]:
