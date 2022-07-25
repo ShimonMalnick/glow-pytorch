@@ -15,10 +15,10 @@
     "forget_images": "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_first/train/images",
     "forget_size": 15,
     "forget_every": null,
-    "log_every": 10,
+    "log_every": 1,
     "save_every": 10000,
-    "forget_thresh": 10.0,
-    "forget_lr": 1e-5,
+    "forget_thresh": 5.0,
+    "forget_lr": 4e-5,
     "num_ref_batches": 3,
     "adaptive_loss": true,
     "forget_baseline": true

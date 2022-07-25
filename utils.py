@@ -78,6 +78,10 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--adaptive_loss', action='store_true', help='Whether to use adaptive loss weights for the '
                                                                          'forget examples', default=None)
         parser.add_argument('--forget_lr', help='Learning rate for the forget optimizer', type=float)
+        parser.add_argument('--scheduler_step', help='Learning rate scheduler step size for the forget optimizer',
+                            type=int)
+        parser.add_argument('--scheduler_gamma', help='Learning rate scheduler gamma argument for StepLR scheduler',
+                            type=float)
 
     args = parser.parse_args()
     out_dict = EasyDict()

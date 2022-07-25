@@ -9,7 +9,8 @@ import torch.nn.functional as F
 from utils import get_args, load_model, save_dict_as_json, \
     save_model_optimizer, get_partial_dataset, compute_dataloader_bpd, get_default_forget_transform
 from torch.utils.data import DataLoader, Subset, Dataset
-from typing import Iterator, Dict, Union, List, Tuple
+from torch.optim.lr_scheduler import StepLR
+from typing import Iterator, Dict, Union, List, Tuple, Optional
 from datasets import CelebAPartial, ForgetSampler
 import wandb
 import logging
@@ -91,7 +92,8 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
            device, forget_optimizer, remember_optimizer,
            eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
            eval_dl: DataLoader,
-           forget_eval_data: Tuple[torch.Tensor, Dict]):
+           forget_eval_data: Tuple[torch.Tensor, Dict],
+           scheduler: Optional[StepLR] = None):
     n_bins = 2 ** args.n_bits
     loss_weights = torch.ones(args.batch, device=device) / args.batch if args.adaptive_loss else None
     weights_cache = {"columns": ["step"] + [f"{i}" for i in range(1, args.batch + 1)], "data": []}
@@ -121,7 +123,8 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
+        if scheduler is not None and loss_name == "forget":
+            scheduler.step()
         # cur_ref_bpd = calc_batch_bpd(args, model, ref_batch)
         cur_forget_bpd = validation_step(args, i, model, device, eval_dl, eval_batches, forget_eval_data)
 
@@ -215,34 +218,53 @@ def args2data_iter(args, ds_type, transform) -> Iterator:
     return get_data_iterator(ds, args.batch, num_workers=args.num_workers)
 
 
+def plot_bpd_histograms(step, exp_name, forget_bpd: np.array, eval_bpd: np.array):
+    plt.figure()
+    plt.hist(forget_bpd, bins=100)
+    forget_path = f"experiments/{exp_name}/logs/forget_bpd_hist_{step}.png"
+    plt.savefig(forget_path)
+    plt.close()
+
+    plt.figure()
+    plt.hist(eval_bpd, bins=100)
+    eval_path = f"experiments/{exp_name}/logs/eval_bpd_hist_{step}.png"
+    plt.savefig(eval_path)
+    plt.close()
+
+    plt.figure()
+    min_val = min(eval_bpd.min().item(), forget_bpd.min().item())
+    max_val = max(eval_bpd.max().item(), forget_bpd.max().item())
+    bins = np.linspace(min_val, max_val, 100)
+    plt.hist(forget_bpd, bins=bins, label="forget", density=True)
+    plt.hist(eval_bpd, bins=bins, label="eval", density=True, alpha=0.5)
+    plt.legend()
+    both_path = f"experiments/{exp_name}/logs/bpd_hist_{step}.png"
+    plt.savefig(both_path)
+    plt.close()
+
+    wandb.log({"forget_hist": wandb.Image(forget_path),
+               "eval_hist": wandb.Image(eval_path),
+               "both_hist": wandb.Image(both_path)}, commit=False)
+
+
 def validation_step(args: EasyDict, step: int, model: torch.nn.Module, device, dl: DataLoader,
                     eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
                     forget_data: Tuple[torch.Tensor, Dict]) -> torch.Tensor:
     model.eval()
     forget_batch, forget_dict = forget_data
-    forget_bpd = calc_batch_bpd(args, model, forget_batch, reduce=False)
-    forget_data = forget_bpd.view(-1).cpu().tolist()
+    forget_bpd = calc_batch_bpd(args, model, forget_batch, reduce=False).cpu()
+    forget_data = forget_bpd.view(-1).tolist()
     forget_dict["data"].append([step + 1] + forget_data)
     wandb.log({"forget_bpd": wandb.Table(**forget_dict)}, commit=False)
     if (step + 1) % args.log_every == 0:
-        eval_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, dl, reduce=False)
-        plt.figure()
-        min_val = min(eval_bpd.min().item(), forget_bpd.min().item())
-        max_val = max(eval_bpd.max().item(), forget_bpd.max().item())
-        bins = np.linspace(min_val, max_val, 100)
-        plt.hist(eval_bpd.cpu().numpy(), bins=bins, alpha=0.5, label="eval", density=True)
-        plt.hist(forget_bpd.cpu().numpy(), bins=bins, label="forget", density=True)
-        plt.legend()
-        save_path = f"experiments/{args.exp_name}/logs/bpd_hist_{step + 1}.png"
-        plt.savefig(save_path)
-        plt.close()
+        eval_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, dl, reduce=False).cpu()
+        plot_bpd_histograms(step + 1, args.exp_name, forget_bpd.numpy(), eval_bpd.numpy())
         for i, (name, batch, indices, data_dict) in enumerate(eval_batches):
             batch_bpd = calc_batch_bpd(args, model, batch, reduce=False)
             data_dict["data"].append([step + 1] + batch_bpd.view(-1).cpu().tolist())
             wandb.log({name: wandb.Table(**data_dict)}, commit=False)
 
-        wandb.log({f"eval_bpd": eval_bpd.mean().item(),
-                   "eval_bpd_histogram": wandb.Image(save_path)},
+        wandb.log({f"eval_bpd": eval_bpd.mean().item()},
                   commit=False)
     model.train()
 
@@ -291,10 +313,8 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer,
             wandb.log({f"achieved_thresh": i + 1})
             break
 
-
         logging.info(
-            f"Iter: {i + 1} Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f};"
-            f"\nforget_bpd: {forget_bpd}")
+            f"Iter: {i + 1} Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f};")
 
         if (i + 1) % args.save_every == 0:
             save_model_optimizer(args, i, model, optimizer, save_prefix='experiments', save_optim=False)
@@ -309,7 +329,7 @@ def get_random_batch(ds: Dataset, batch_size, device) -> Tuple[torch.Tensor, tor
 
 
 def main():
-    os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
+    # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -346,8 +366,12 @@ def main():
     else:
         remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
         remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        if args.scheduler_step and args.scheduler_gamma:
+            scheduler = StepLR(optimizer=forget_optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
+        else:
+            scheduler = None
         forget(args, remember_iter, forget_iter, model, device, forget_optimizer, remember_optimizer,
-               eval_batches, eval_dl, forget_ref_data)
+               eval_batches, eval_dl, forget_ref_data, scheduler)
 
 
 if __name__ == '__main__':
