@@ -1,7 +1,10 @@
 import math
 import logging
+import os
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
-from typing import Union
+from glob import glob
+from typing import Union, List
+from PIL import Image
 from matplotlib import pyplot as plt
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
 from datasets import CelebAPartial
@@ -412,3 +415,22 @@ def get_default_forget_transform(img_size, n_bits) -> Compose:
                          lambda img: quantize_image(img, n_bits)])
 
     return transform
+
+
+def images_to_gif(path: Union[str, List[str]], out_path, duration=300, **kwargs) -> None:
+    """
+    Given a path to a directory containing images, create a gif from the images using Pillow save function
+    :param duration: duration in milliseconds for each image
+    :param path: Either a str containing a path to a directory containing only images ,or list of paths to images
+    :param out_path: path to save the gif
+    :param kwargs: arguments to pass to the save function
+    :return: None
+    """
+    if isinstance(path, str):
+        path = glob(f"{path}/*")
+    elif not isinstance(path, list):
+        raise ValueError("path must be either a str or a list of str")
+    images = [Image.open(p) for p in path]
+    assert len(images) > 0, "No images found in directory"
+    images[0].save(out_path, save_all=True, optimize=False, append_images=images[1:], loop=0,
+                   duration=duration, **kwargs)
