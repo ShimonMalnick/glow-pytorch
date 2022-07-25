@@ -94,6 +94,7 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
            forget_eval_data: Tuple[torch.Tensor, Dict]):
     n_bins = 2 ** args.n_bits
     loss_weights = torch.ones(args.batch, device=device) / args.batch if args.adaptive_loss else None
+    weights_cache = {"columns": ["step"] + [f"{i}" for i in range(1, args.batch + 1)], "data": []}
     for i in range(args.iter):
         if (i + 1) % args.forget_every == 0:
             loss_sign = -1.0
@@ -107,11 +108,14 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
             optimizer = remember_optimizer
         cur_batch = cur_batch.to(device)
         log_p, logdet, _ = model(cur_batch + torch.rand_like(cur_batch) / n_bins)
-        if args.adaptive_loss and loss_name == "forget":
-            loss_weights = compute_adaptive_weights(log_p, device=device, T=1e-6)
         logdet = logdet.mean()
-
-        loss, log_p, log_det = calc_forget_loss(log_p, logdet, args.img_size, n_bins, weights=loss_weights)
+        if args.adaptive_loss and loss_name == "forget":
+            with torch.no_grad():
+                loss_weights = compute_adaptive_weights((log_p + logdet).detach(), device=device, scale=1e6)
+                weights_cache["data"].append([i + 1] + loss_weights.view(-1).tolist())
+                wandb.log({"forget_weights": wandb.Table(**weights_cache)}, commit=False)
+        weights = loss_weights if loss_name == "forget" else None
+        loss, log_p, log_det = calc_forget_loss(log_p, logdet, args.img_size, n_bins, weights=weights)
         loss = loss_sign * loss
 
         optimizer.zero_grad()
@@ -139,11 +143,11 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
         )
 
         if (i + 1) % args.save_every == 0:
-            save_forget_checkpoint(args, forget_optimizer, i, model, remember_optimizer)
-    save_forget_checkpoint(args, forget_optimizer, 0, model, remember_optimizer, last=True)
+            save_forget_checkpoint(args, forget_optimizer, i, model, remember_optimizer, save_optim=False)
+    save_forget_checkpoint(args, forget_optimizer, 0, model, remember_optimizer, last=True, save_optim=False)
 
 
-def save_forget_checkpoint(args, forget_optimizer, iter_num, model, remember_optimizer, last=False):
+def save_forget_checkpoint(args, forget_optimizer, iter_num, model, remember_optimizer, last=False, save_optim=True):
     if last:
         model_id = "last"
     else:
@@ -151,14 +155,15 @@ def save_forget_checkpoint(args, forget_optimizer, iter_num, model, remember_opt
     torch.save(
         model.state_dict(), f'experiments/{args.exp_name}/checkpoints/model_{model_id}.pt'
     )
-    torch.save(
-        forget_optimizer.state_dict(),
-        f'experiments/{args.exp_name}/checkpoints/forget_optim_{model_id}.pt'
-    )
-    torch.save(
-        remember_optimizer.state_dict(),
-        f'experiments/{args.exp_name}/checkpoints/regular_optim_{model_id}.pt'
-    )
+    if save_optim:
+        torch.save(
+            forget_optimizer.state_dict(),
+            f'experiments/{args.exp_name}/checkpoints/forget_optim_{model_id}.pt'
+        )
+        torch.save(
+            remember_optimizer.state_dict(),
+            f'experiments/{args.exp_name}/checkpoints/regular_optim_{model_id}.pt'
+        )
 
 
 def args2dset_params(args, ds_type) -> Dict:
@@ -244,14 +249,10 @@ def validation_step(args: EasyDict, step: int, model: torch.nn.Module, device, d
     return forget_bpd
 
 
-def compute_adaptive_weights(log_p, device, T=1.0) -> torch.Tensor:
+def compute_adaptive_weights(prob, device, scale=1.0) -> torch.Tensor:
     with torch.no_grad():
-        weights = 1.0 / log_p.detach().clone()
-        weights = F.softmax(weights / T, dim=0)
-    print("*" * 20)
-    print(weights)
-    print("*" * 20)
-    return weights.to(device)
+        weights = F.softmax(scale / prob, dim=0)
+        return weights.to(device)
 
 
 def forget_baseline(forget_iter: Iterator, args, model, device, optimizer,
@@ -265,11 +266,11 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer,
         cur_batch, _ = next(forget_iter)
         cur_batch = cur_batch.to(device)
         log_p, logdet, _ = model(cur_batch + torch.rand_like(cur_batch) / n_bins)
-        if args.adaptive_loss:
-            loss_weights = compute_adaptive_weights(log_p, device=device, T=1e-6)
-            weights_cache["data"].append(loss_weights.view(-1).tolist())
-            wandb.log({"forget_weights": wandb.Table(**weights_cache)}, commit=False)
         logdet = logdet.mean()
+        if args.adaptive_loss:
+            loss_weights = compute_adaptive_weights((log_p + logdet).detach(), device=device, scale=1e6)
+            weights_cache["data"].append(loss_weights.detach().tolist())
+            wandb.log({"forget_weights": wandb.Table(**weights_cache)}, commit=False)
 
         loss, log_p, log_det = calc_forget_loss(log_p, logdet, args.img_size, n_bins, weights=loss_weights)
         loss = loss * -1.0  # to forget instead of learning these examples
@@ -296,8 +297,8 @@ def forget_baseline(forget_iter: Iterator, args, model, device, optimizer,
             f"\nforget_bpd: {forget_bpd}")
 
         if (i + 1) % args.save_every == 0:
-            save_model_optimizer(args, i, model, optimizer, save_prefix='experiments')
-    save_model_optimizer(args, 0, model, optimizer, save_prefix='experiments', last=True)
+            save_model_optimizer(args, i, model, optimizer, save_prefix='experiments', save_optim=False)
+    save_model_optimizer(args, 0, model, optimizer, save_prefix='experiments', last=True, save_optim=False)
 
 
 def get_random_batch(ds: Dataset, batch_size, device) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -308,7 +309,7 @@ def get_random_batch(ds: Dataset, batch_size, device) -> Tuple[torch.Tensor, tor
 
 
 def main():
-    # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
+    os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -321,7 +322,7 @@ def main():
     forget_ref_batch = torch.stack([forget_ds[idx][0] for idx in range(len(forget_ds))]).to(device)
     forget_ref_data = (forget_ref_batch, {"columns": ["step"] + [f"idx {i}" for i in range(len(forget_ds))],
                                           "data": []})
-    forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.forget_lr)
     remember_ds = args2dataset(args, ds_type='remember', transform=transform)
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)

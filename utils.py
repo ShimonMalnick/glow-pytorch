@@ -74,6 +74,7 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--num_ref_batches', help='number of reference batches from the remember data', type=int)
         parser.add_argument('--adaptive_loss', action='store_true', help='Whether to use adaptive loss weights for the '
                                                                          'forget examples', default=None)
+        parser.add_argument('--forget_lr', help='Learning rate for the forget optimizer', type=float)
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -182,7 +183,7 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
     return bpd
 
 
-def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoader, reduce=True)\
+def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoader, reduce=True) \
         -> Union[float, torch.Tensor]:
     """
     Computation of bits per dimension as done in Glow, meaning we:
@@ -205,7 +206,7 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
         with torch.no_grad():
             log_p, logdet, _ = model(x)
 
-            #added next line due to instability
+            # added next line due to instability
             logdet = logdet.mean()
         if reduce:
             nll -= torch.sum(log_p + logdet).item()
@@ -294,7 +295,8 @@ def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs) -> No
     plt.close()
 
 
-def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experiments', last=False) -> None:
+def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experiments', last=False,
+                         save_optim=True) -> None:
     if last:
         model_id = "last"
     else:
@@ -302,9 +304,10 @@ def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experime
     torch.save(
         model.state_dict(), f'{save_prefix}/{args.exp_name}/checkpoints/model_{model_id}.pt'
     )
-    torch.save(
-        optimizer.state_dict(), f'{save_prefix}/{args.exp_name}/checkpoints/optim_{model_id}.pt'
-    )
+    if save_optim:
+        torch.save(
+            optimizer.state_dict(), f'{save_prefix}/{args.exp_name}/checkpoints/optim_{model_id}.pt'
+        )
 
 
 def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False) -> None:

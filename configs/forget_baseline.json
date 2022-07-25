@@ -18,6 +18,7 @@
     "log_every": 10,
     "save_every": 10000,
     "forget_thresh": 10.0,
+    "forget_lr": 1e-5,
     "num_ref_batches": 3,
     "adaptive_loss": true,
     "forget_baseline": true
