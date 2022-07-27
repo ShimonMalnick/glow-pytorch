@@ -82,6 +82,9 @@ def get_args(**kwargs) -> EasyDict:
                             type=int)
         parser.add_argument('--scheduler_gamma', help='Learning rate scheduler gamma argument for StepLR scheduler',
                             type=float)
+        parser.add_argument('--alpha', help='if given, training will be done with loss updates of both forget and'
+                                            ' remember data in every update, by using'
+                                            ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
 
     args = parser.parse_args()
     out_dict = EasyDict()

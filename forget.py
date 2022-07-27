@@ -88,6 +88,57 @@ def calc_batch_bpd(args, model, batch, reduce=True) -> Union[float, torch.Tensor
     return cur_bpd
 
 
+def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Glow, torch.nn.DataParallel],
+           device, optimizer: torch.optim.Optimizer,
+           eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
+           eval_dl: DataLoader,
+           forget_eval_data: Tuple[torch.Tensor, Dict],
+           scheduler: Optional[StepLR] = None):
+    n_bins = 2 ** args.n_bits
+    for i in range(args.iter):
+        forget_batch = next(forget_iter)[0].to(device)
+        forget_p, forget_det, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
+        forget_det = forget_det.mean()
+        forget_loss, forget_p, forget_det = calc_forget_loss(forget_p, forget_det, args.img_size, n_bins)
+        forget_loss.mul_(-1.0)
+
+        remember_batch = next(remember_iter)[0].to(device)
+        remember_p, remember_det, _ = model(remember_batch + torch.rand_like(remember_batch) / n_bins)
+        remember_det = remember_det.mean()
+        remember_loss, remember_p, remember_det = calc_forget_loss(remember_p, remember_det, args.img_size, n_bins)
+
+        loss = args.alpha * forget_loss + (1 - args.alpha) * remember_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
+        # cur_ref_bpd = calc_batch_bpd(args, model, ref_batch)
+        cur_forget_bpd = validation_step(args, i, model, device, eval_dl, eval_batches, forget_eval_data)
+
+        wandb.log({"forget": {"loss": forget_loss.item(),
+                                    "log_p": forget_p.item(),
+                                    "log_det": forget_det.item()},
+                     "remember": {"loss": remember_loss.item(),
+                                    "log_p": remember_p.item(),
+                                    "log_det": remember_det.item()},
+                  "forget_bpd_mean": cur_forget_bpd.mean().item()
+                   })
+
+        if torch.all(cur_forget_bpd > args.forget_thresh):
+            logging.info("breaking after {} iterations".format(i + 1))
+            wandb.log({f"achieved_thresh": i + 1})
+            break
+
+        logging.info(f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
+
+        if args.save_every is not None and (i + 1) % args.save_every == 0:
+            save_model_optimizer(args, i, model, optimizer, save_optim=False)
+    if args.save_every is not None:
+        save_model_optimizer(args, 0, model, optimizer, last=True, save_optim=False)
+
+
 def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Glow, torch.nn.DataParallel],
            device, forget_optimizer, remember_optimizer,
            eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
@@ -129,11 +180,10 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
         cur_forget_bpd = validation_step(args, i, model, device, eval_dl, eval_batches, forget_eval_data)
 
         wandb.log({f"{loss_name}": {"loss": loss.item(),
-                                    "bpd": cur_forget_bpd.mean().item(),
                                     "log_p": log_p.item(),
                                     "log_det": log_det.item(),
                                     "prob": log_p.item() + log_det.item()},
-                   "batch_type": loss_sign
+                   "forget bpd mean": cur_forget_bpd.mean().item()
                    })
 
         if torch.all(cur_forget_bpd > args.forget_thresh):
@@ -145,9 +195,10 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
             f"Iter: {i + 1} Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; "
         )
 
-        if (i + 1) % args.save_every == 0:
+        if args.save_every is not None and (i + 1) % args.save_every == 0:
             save_forget_checkpoint(args, forget_optimizer, i, model, remember_optimizer, save_optim=False)
-    save_forget_checkpoint(args, forget_optimizer, 0, model, remember_optimizer, last=True, save_optim=False)
+    if args.save_every is not None:
+        save_forget_checkpoint(args, forget_optimizer, 0, model, remember_optimizer, last=True, save_optim=False)
 
 
 def save_forget_checkpoint(args, forget_optimizer, iter_num, model, remember_optimizer, last=False, save_optim=True):
@@ -365,13 +416,17 @@ def main():
         forget_baseline(forget_iter, args, model, device, forget_optimizer, eval_batches, eval_dl, forget_ref_data)
     else:
         remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
-        remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         if args.scheduler_step and args.scheduler_gamma:
             scheduler = StepLR(optimizer=forget_optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
         else:
             scheduler = None
-        forget(args, remember_iter, forget_iter, model, device, forget_optimizer, remember_optimizer,
-               eval_batches, eval_dl, forget_ref_data, scheduler)
+        if args.alpha is not None:
+            forget_alpha(args, remember_iter, forget_iter, model, device, forget_optimizer, eval_batches, eval_dl,
+                         forget_ref_data, scheduler)
+        else:
+            remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+            forget(args, remember_iter, forget_iter, model, device, forget_optimizer, remember_optimizer,
+                   eval_batches, eval_dl, forget_ref_data, scheduler)
 
 
 if __name__ == '__main__':
