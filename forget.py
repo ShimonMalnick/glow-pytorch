@@ -89,6 +89,19 @@ def calc_batch_bpd(args, model, batch, reduce=True) -> Union[float, torch.Tensor
     return cur_bpd
 
 
+def prob2bpd(prob, n_bins, n_pixels):
+    return - prob / (math.log(2) * n_pixels) + math.log(n_bins) / math.log(2)
+
+
+def compute_relevant_indices(thresh, model, forget_batch, n_bins, n_pixels) -> torch.Tensor:
+    with torch.no_grad():
+        log_p, logdet, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
+        logdet = logdet.mean()
+        cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
+        indices = torch.nonzero(cur_bpd < thresh, as_tuple=True)[0]
+        return indices
+
+
 def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Glow, torch.nn.DataParallel],
            device, optimizer: torch.optim.Optimizer,
            eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
@@ -96,16 +109,25 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
            forget_eval_data: Tuple[torch.Tensor, Dict],
            scheduler: Optional[StepLR] = None):
     n_bins = 2 ** args.n_bits
+    n_pixels = args.img_size * args.img_size * 3
     loss_weights = torch.ones(args.batch, device=device) / args.batch if args.adaptive_loss else None
     weights_cache = {"columns": ["step"] + [f"{i}" for i in range(1, args.batch + 1)], "data": []}
     for i in range(args.iter):
         forget_batch = next(forget_iter)[0].to(device)
+        indices = compute_relevant_indices(args.forget_thresh, model, forget_batch, n_bins, n_pixels)
+        if indices.numel() == 0:
+            logging.info("breaking after {} iterations".format(i + 1))
+            wandb.log({f"achieved_thresh": i + 1})
+            break
+        else:
+            forget_batch = forget_batch[indices]
+            wandb.log({"batch size": forget_batch.shape[0]}, commit=False)
         forget_p, forget_det, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
         forget_det = forget_det.mean()
         if args.adaptive_loss:
             with torch.no_grad():
                 loss_weights = compute_adaptive_weights((forget_p + forget_det).detach(), device=device, scale=1e6)
-                weights_cache["data"].append([i + 1] + loss_weights.view(-1).tolist())
+                weights_cache["data"].append([i + 1] + loss_weights.view(-1).tolist() + [-1 for _ in range(args.batch - loss_weights.shape[0])])
                 wandb.log({"forget_weights": wandb.Table(**weights_cache)}, commit=False)
         forget_loss, forget_p, forget_det = calc_forget_loss(forget_p, forget_det, args.img_size, n_bins, weights=loss_weights)
         forget_loss.mul_(-1.0)
@@ -122,7 +144,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
-        # cur_ref_bpd = calc_batch_bpd(args, model, ref_batch)
+
         cur_forget_bpd = validation_step(args, i, model, device, eval_dl, eval_batches, forget_eval_data)
 
         wandb.log({"forget": {"loss": forget_loss.item(),
@@ -133,11 +155,6 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
                                     "log_det": remember_det.item()},
                   "forget_bpd_mean": cur_forget_bpd.mean().item()
                    })
-
-        if torch.all(cur_forget_bpd > args.forget_thresh):
-            logging.info("breaking after {} iterations".format(i + 1))
-            wandb.log({f"achieved_thresh": i + 1})
-            break
 
         logging.info(f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
 
@@ -184,7 +201,6 @@ def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Gl
         optimizer.step()
         if scheduler is not None and loss_name == "forget":
             scheduler.step()
-        # cur_ref_bpd = calc_batch_bpd(args, model, ref_batch)
         cur_forget_bpd = validation_step(args, i, model, device, eval_dl, eval_batches, forget_eval_data)
 
         wandb.log({f"{loss_name}": {"loss": loss.item(),
@@ -387,6 +403,20 @@ def get_random_batch(ds: Dataset, batch_size, device) -> Tuple[torch.Tensor, tor
     return batch, indices
 
 
+def get_eval_data(args, remember_ds, device) -> Tuple[List[Tuple[str, torch.Tensor, torch.Tensor, Dict]], DataLoader]:
+    eval_batches = []
+    for i in range(1, args.num_ref_batches + 1):
+        name = f"ref_batch_{i}"
+        ref_batch, indices = get_random_batch(remember_ds, args.batch, device)
+        data_dict = {"columns": ['step'] + [f"idx {idx}" for idx in range(args.batch)],
+                     "data": []}
+        eval_batches.append((name, ref_batch, indices, data_dict))
+    ds_rand_perm = torch.randperm(len(remember_ds))
+    subset_remember_ds = Subset(remember_ds, ds_rand_perm[:1024])
+    eval_dl = DataLoader(subset_remember_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
+    return eval_batches, eval_dl
+
+
 def main():
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
@@ -405,17 +435,7 @@ def main():
     remember_ds = args2dataset(args, ds_type='remember', transform=transform)
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)
-    eval_batches = []
-    for i in range(1, args.num_ref_batches + 1):
-        name = f"ref_batch_{i}"
-        ref_batch, indices = get_random_batch(remember_ds, args.batch, device)
-        data_dict = {"columns": ['step'] + [f"idx {idx}" for idx in range(args.batch)],
-                     "data": []}
-        eval_batches.append((name, ref_batch, indices, data_dict))
-    ds_rand_perm = torch.randperm(len(remember_ds))
-    subset_remember_ds = Subset(remember_ds, ds_rand_perm[:1024])
-    eval_dl = DataLoader(subset_remember_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
-
+    eval_batches, eval_dl = get_eval_data(args, remember_ds, device)
     wandb.init(project="Forget Logged", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
