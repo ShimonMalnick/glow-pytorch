@@ -205,73 +205,51 @@ def plot_similarity_vs_bpd(save_path: str, bpd_json: str,
     plt.close()
 
 
-def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution'):
+def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution', training=False):
     if not os.path.isdir(save_dir):
         os.mkdir(save_dir)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     args = get_args(forget=True)
-    model: Glow = load_model(args, device, training=False)
-    bpds = []
+    model: Glow = load_model(args, device, training=training)
+    bpds = None
     transform = get_default_forget_transform(args.img_size, args.n_bits)
     ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
+    # ds_debug = Subset(ds, range(2048))
+    # dl = DataLoader(ds_debug, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
+
 
     M = args.img_size * args.img_size * 3
     n_bins = 2 ** args.n_bits
-    for batch in dl:
+    for i, batch in enumerate(dl, 1):
         x, _ = batch
         x = x.to(device)
         with torch.no_grad():
             log_p, logdet, _ = model(x)
-        assert x.shape[0] == batch_size
-        cur_nll = - torch.sum(log_p + logdet).item() / x.shape[0]
-        cur_bpd = (cur_nll + (M * math.log(n_bins))) / (math.log(2) * M)
-        bpds.append(cur_bpd)
+            logdet = logdet.mean()
+        cur_nll = - (log_p + logdet)
+        assert cur_nll.nelement() == batch_size and cur_nll.ndim == 1
+        cur_bpd = cur_nll / (math.log(2) * M) + math.log(n_bins) / math.log(2)
+        if bpds is None:
+            bpds = cur_bpd.detach().cpu()
+        else:
+            bpds = torch.cat((bpds, cur_bpd.detach().cpu()))
+        print(f"Finished {i}/{len(dl)} batches")
 
-    bpds = np.array(bpds)
-    np.save(f"{save_dir}/bpd_distribution.npy", bpds)
+    torch.save(bpds, f"{save_dir}/bpd_distribution.pt")
 
-    data = {'mean': np.mean(bpds),
-            'std': np.std(bpds),
-            'min': np.min(bpds),
-            'max': np.max(bpds),
-            'median': np.median(bpds)}
+    data = {'mean': torch.mean(bpds).item(),
+            'std': torch.std(bpds).item(),
+            'min': torch.min(bpds).item(),
+            'max': torch.max(bpds).item(),
+            'median': torch.median(bpds).item()}
     save_dict_as_json(data, f"{save_dir}/bpd_distribution.json")
+    plt.hist(bpds.numpy(), bins=200)
+    plt.title('BPD distribution histogram')
+    plt.savefig(f"{save_dir}/bpd_distribution_hist.png")
 
 
 if __name__ == '__main__':
     # wandb.init(project='tmp-debug', name=f'hist_{torch.randint(20, (1,)).item()}', entity="malnick")
     logging.getLogger().setLevel(logging.INFO)
-    args = get_args(forget=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(args, device, training=False)
-    transform = get_default_forget_transform(args.img_size, args.n_bits)
-    base_ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
-    for i in range(1):
-        remember_ds = args2dataset(args, ds_type='remember', transform=transform)
-        rand_indices = torch.randperm(len(remember_ds))[:1024]
-        subset_remember_ds = Subset(remember_ds, rand_indices)
-        eval_dl = DataLoader(subset_remember_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
-
-        bpds = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, eval_dl, reduce=False)
-        print("here")
-        exit()
-        plt.hist(bpds.detach().cpu().numpy(), bins=100)
-        plt.savefig(f"outputs/baseline_stats/1024_images/hist_{i}.png")
-        # plt.savefig(f'outputs/baseline_stats/5120_random_subset/all_bpd_hist_tmp_{i}.png')
-        # wandb.log({"histogram": wandb.Image(f'outputs/baseline_stats/5120_random_subset/all_bpd_hist_tmp_{i}.png')})
-        # logging.info(f'Total took: {time() - before} seconds')
-
-    # plt.hist(bpds.detach().cpu().numpy(), bins=100)
-    # plt.savefig('outputs/baseline_stats/5120_random_subset/all_bpd_hist.png')
-    # torch.save(bpds, 'outputs/baseline_stats/5120_random_subset/all_bpd.pt')
-    # folders = glob("experiments/forget/*")
-    # baseline_folder = glob("experiments/forget/baseline*")
-    # regular_folders = list(set(folders) - set(baseline_folder))
-    # save_path = 'outputs/forget_bpd/forget.json'
-    # base_image_folder = "/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities"
-    # image_folders = [f"{base_image_folder}/1_{p}/train/images" for p in ["first", "second"]]
-    # run_eval_on_models(regular_folders, [171, 3121, 8582, 2252, 1290, 6176], save_path=save_path, reduce=False)
-    # run_eval_on_models_on_images(regular_folders, images_folders=image_folders, names=["forget_split", "unseen_split"],
-    #                              save_path=save_path, reduce=False)
-
+    pass

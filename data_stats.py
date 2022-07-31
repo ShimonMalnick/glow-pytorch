@@ -9,7 +9,8 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader, Subset
-from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, compute_cosine_similarity
+from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, \
+    compute_cosine_similarity, get_default_forget_transform
 from time import time
 from multiprocessing import Pool
 from collections import Counter
@@ -314,14 +315,4 @@ def plot_identity_neighbors(neighbors_index: List[int], chosen_id: Union[int, st
 
 
 if __name__ == '__main__':
-    for i in range(3, 7):
-        plot_identity_neighbors([1, 2, 3, 4, 5, 10, 20, -20, -10, -5, -4, -3, -2, -1], save_path=f"outputs/identity_1_first/{i}neighbors.png")
-    exit(1)
-    bpds = torch.load("outputs/baseline_stats/all_images_bpd.pt").cpu()
-    data = {"mean": bpds.mean().item(), "std": bpds.std().item(), "min": bpds.min().item(), "max": bpds.max().item(),
-            "median": torch.median(bpds).item()}
-    save_dict_as_json(data, "outputs/baseline_stats/all_images_bpd.json")
-
     pass
-    # logging.getLogger().setLevel(logging.INFO)
-    # images = glob("/home/yandex/AMNLP2021/malnick/datasets/celebA_subsets/frequent_identities/1_first/train/images/*")
