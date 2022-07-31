@@ -79,12 +79,13 @@ def calc_batch_bpd(args, model, batch, reduce=True) -> Union[float, torch.Tensor
     with torch.no_grad():
         log_p, logdet, _ = model(batch)
     if reduce:
-        cur_nll = - torch.sum(log_p + logdet.mean()).item() / batch.shape[0]
+        cur_nll = - torch.sum(log_p + logdet.mean()).item()
     else:
         cur_nll = - (log_p + logdet.mean())
 
     cur_bpd = (cur_nll + (M * math.log(n_bins))) / (math.log(2) * M)
-
+    if reduce:
+        cur_bpd /= batch.shape[0]
     return cur_bpd
 
 
@@ -95,11 +96,18 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
            forget_eval_data: Tuple[torch.Tensor, Dict],
            scheduler: Optional[StepLR] = None):
     n_bins = 2 ** args.n_bits
+    loss_weights = torch.ones(args.batch, device=device) / args.batch if args.adaptive_loss else None
+    weights_cache = {"columns": ["step"] + [f"{i}" for i in range(1, args.batch + 1)], "data": []}
     for i in range(args.iter):
         forget_batch = next(forget_iter)[0].to(device)
         forget_p, forget_det, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
         forget_det = forget_det.mean()
-        forget_loss, forget_p, forget_det = calc_forget_loss(forget_p, forget_det, args.img_size, n_bins)
+        if args.adaptive_loss:
+            with torch.no_grad():
+                loss_weights = compute_adaptive_weights((forget_p + forget_det).detach(), device=device, scale=1e6)
+                weights_cache["data"].append([i + 1] + loss_weights.view(-1).tolist())
+                wandb.log({"forget_weights": wandb.Table(**weights_cache)}, commit=False)
+        forget_loss, forget_p, forget_det = calc_forget_loss(forget_p, forget_det, args.img_size, n_bins, weights=loss_weights)
         forget_loss.mul_(-1.0)
 
         remember_batch = next(remember_iter)[0].to(device)

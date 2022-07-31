@@ -178,6 +178,7 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
         x = x.to(device).unsqueeze(0)
         with torch.no_grad():
             log_p, logdet, _ = model(x)
+            logdet = logdet.mean()
         if reduce:
             nll -= torch.sum(log_p + logdet).item()
         else:
@@ -186,10 +187,10 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
                 nll = cur_nll
             else:
                 nll = torch.cat((nll, cur_nll))
-    if reduce:
-        nll /= total_images
     M = img_size * img_size * 3
     bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
+    if reduce:
+        nll /= total_images
     return bpd
 
 
@@ -215,8 +216,6 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
         x = x.to(device)
         with torch.no_grad():
             log_p, logdet, _ = model(x)
-
-            # added next line due to instability
             logdet = logdet.mean()
         if reduce:
             nll -= torch.sum(log_p + logdet).item()
@@ -228,10 +227,10 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
                 nll = torch.cat((nll, cur_nll.detach().cpu()))
         total_images += x.shape[0]
         logging.debug(f"finished batch: {idx}/{len(data_loader)}")
-    if reduce:
-        nll /= total_images
     M = img_size * img_size * 3
     bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
+    if reduce:
+        nll /= total_images
     return bpd
 
 
