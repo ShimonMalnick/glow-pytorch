@@ -61,6 +61,7 @@ def get_args(**kwargs) -> EasyDict:
     if kwargs.get('forget', False):
         if kwargs.get('forget_attribute', False):
             parser.add_argument('--forget_attribute', help='which attribute to forget', choices=['male', 'glasses'])
+            parser.add_argument('--debias', help='Whether to forget or debias', action='store_true', default=None)
         else:
             parser.add_argument('--forget_images', help='path to images to forget')
             parser.add_argument('--forget_identity', help='Identity to forget', type=int)
@@ -176,6 +177,7 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
     for i in range(total_images):
         x, _ = dataset[i]
         x = x.to(device).unsqueeze(0)
+        x += torch.rand_like(x) / n_bins
         with torch.no_grad():
             log_p, logdet, _ = model(x)
             logdet = logdet.mean()
@@ -214,6 +216,7 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
     for idx, batch in enumerate(data_loader, 1):
         x, _ = batch
         x = x.to(device)
+        x += torch.rand_like(x) / n_bins
         with torch.no_grad():
             log_p, logdet, _ = model(x)
             logdet = logdet.mean()
