@@ -293,33 +293,38 @@ def args2data_iter(args, ds_type, transform) -> Iterator:
     return get_data_iterator(ds, args.batch, num_workers=args.num_workers)
 
 
-def plot_bpd_histograms(step, exp_name, forget_bpd: np.array, eval_bpd: np.array):
-    plt.figure()
-    plt.hist(forget_bpd, bins=100)
-    forget_path = f"experiments/{exp_name}/logs/forget_bpd_hist_{step}.png"
-    plt.savefig(forget_path)
-    plt.close()
+def plot_bpd_histograms(step, exp_name, forget_bpd: Optional[np.array] = None, eval_bpd: Optional[np.array] = None):
+    log_params = {}
+    if forget_bpd is not None:
+        plt.figure()
+        plt.hist(forget_bpd, bins=100)
+        forget_path = f"experiments/{exp_name}/logs/forget_bpd_hist_{step}.png"
+        plt.savefig(forget_path)
+        plt.close()
+        log_params["forget_hist"] = wandb.Image(forget_path)
 
-    plt.figure()
-    plt.hist(eval_bpd, bins=100)
-    eval_path = f"experiments/{exp_name}/logs/eval_bpd_hist_{step}.png"
-    plt.savefig(eval_path)
-    plt.close()
+    if eval_bpd is not None:
+        plt.figure()
+        plt.hist(eval_bpd, bins=100)
+        eval_path = f"experiments/{exp_name}/logs/eval_bpd_hist_{step}.png"
+        plt.savefig(eval_path)
+        plt.close()
+        log_params["eval_hist"] = wandb.Image(eval_path)
 
-    plt.figure()
-    min_val = min(eval_bpd.min().item(), forget_bpd.min().item())
-    max_val = max(eval_bpd.max().item(), forget_bpd.max().item())
-    bins = np.linspace(min_val, max_val, 100)
-    plt.hist(forget_bpd, bins=bins, label="forget", density=True)
-    plt.hist(eval_bpd, bins=bins, label="eval", density=True, alpha=0.5)
-    plt.legend()
-    both_path = f"experiments/{exp_name}/logs/bpd_hist_{step}.png"
-    plt.savefig(both_path)
-    plt.close()
+    if eval_bpd is not None and forget_bpd is not None:
+        plt.figure()
+        min_val = min(eval_bpd.min().item(), forget_bpd.min().item())
+        max_val = max(eval_bpd.max().item(), forget_bpd.max().item())
+        bins = np.linspace(min_val, max_val, 100)
+        plt.hist(forget_bpd, bins=bins, label="forget", density=True)
+        plt.hist(eval_bpd, bins=bins, label="eval", density=True, alpha=0.5)
+        plt.legend()
+        both_path = f"experiments/{exp_name}/logs/bpd_hist_{step}.png"
+        plt.savefig(both_path)
+        plt.close()
+        log_params["both_hist"] = wandb.Image(both_path)
 
-    wandb.log({"forget_hist": wandb.Image(forget_path),
-               "eval_hist": wandb.Image(eval_path),
-               "both_hist": wandb.Image(both_path)}, commit=False)
+    wandb.log(log_params, commit=False)
 
 
 def validation_step(args: EasyDict, step: int, model: torch.nn.Module, device, dl: DataLoader,
@@ -405,12 +410,13 @@ def get_random_batch(ds: Dataset, batch_size, device) -> Tuple[torch.Tensor, tor
 
 def get_eval_data(args, remember_ds, device) -> Tuple[List[Tuple[str, torch.Tensor, torch.Tensor, Dict]], DataLoader]:
     eval_batches = []
-    for i in range(1, args.num_ref_batches + 1):
-        name = f"ref_batch_{i}"
-        ref_batch, indices = get_random_batch(remember_ds, args.batch, device)
-        data_dict = {"columns": ['step'] + [f"idx {idx}" for idx in range(args.batch)],
-                     "data": []}
-        eval_batches.append((name, ref_batch, indices, data_dict))
+    if args.num_ref_batches is not None:
+        for i in range(1, args.num_ref_batches + 1):
+            name = f"ref_batch_{i}"
+            ref_batch, indices = get_random_batch(remember_ds, args.batch, device)
+            data_dict = {"columns": ['step'] + [f"idx {idx}" for idx in range(args.batch)],
+                         "data": []}
+            eval_batches.append((name, ref_batch, indices, data_dict))
     ds_rand_perm = torch.randperm(len(remember_ds))
     subset_remember_ds = Subset(remember_ds, ds_rand_perm[:1024])
     eval_dl = DataLoader(subset_remember_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
