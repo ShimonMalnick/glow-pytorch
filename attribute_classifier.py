@@ -2,10 +2,13 @@ import json
 import os
 from time import time
 import logging
-from typing import Dict, Optional, Iterator
+from typing import Iterator, Union
 import wandb
 from easydict import EasyDict
 from torch.utils.data import DataLoader
+from torchvision.utils import save_image
+
+from datasets import CelebAPartial
 from utils import CELEBA_ROOT, load_resnet_for_binary_cls, CELEBA_MALE_ATTR_IDX, CELEBA_GLASSES_ATTR_IDX, \
     get_resnet_50_normalization, load_model, save_dict_as_json, get_args, get_partial_dataset
 import pytorch_lightning as pl
@@ -17,9 +20,9 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from model import Glow
 from train import calc_z_shapes
-from forget import make_forget_exp_dir, get_data_iterator, calc_batch_bpd, get_default_forget_transform
-from forget import forget as vanilla_forget
-from forget import forget_baseline as vanilla_forget_baseline
+from forget import make_forget_exp_dir, get_data_iterator, get_default_forget_transform, get_eval_data, \
+    calc_forget_loss, compute_dataloader_bpd, plot_bpd_histograms, save_model_optimizer
+
 
 # Constants #
 # adjustment for the loss on imbalanced dataset
@@ -27,7 +30,7 @@ CELEBA_MALE_FRACTION = (202599 - 84434) / 84434
 CELEBA_GLASSES_FRACTION = (202599 - 13193) / 13193
 GLASSES_IDX = 0
 MALE_IDX = 1
-GLOW_BASELINE_CKPT = "models/baseline/continue_celeba/model_090001.pt "
+GLOW_BASELINE_CKPT = "models/baseline/continue_celeba/model_090001.pt"
 ATTRIBUTES_INDICES_PATH = "attribute_classifier/attributes_indices.json"
 
 
@@ -182,8 +185,9 @@ def train():
     trainer.fit(model, train_dl, val_dl)
 
 
-def analyze_glow_attributes(n_samples, save_path, ckpt_path=GLOW_BASELINE_CKPT):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def analyze_glow_attributes(n_samples, save_path, ckpt_path=GLOW_BASELINE_CKPT, device=None):
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     args = {"ckpt_path": ckpt_path,
             "n_flow": 32,
             "n_block": 4,
@@ -236,7 +240,7 @@ def get_celeba_attributes_indices(split='train', save_dir='attribute_classifier'
     save_dict_as_json(data, f"{save_dir}/attributes_indices.json")
 
 
-def get_attribute_data_iter(args, transform, include_attribute=True, ds_len: Optional[Dict] = None) -> Iterator:
+def get_attribute_ds(args, transform, include_attribute=True) -> CelebAPartial:
     with open(ATTRIBUTES_INDICES_PATH, "r") as f:
         attributes_indices = json.load(f)
     assert args.forget_attribute in ['male', 'glasses']
@@ -256,10 +260,75 @@ def get_attribute_data_iter(args, transform, include_attribute=True, ds_len: Opt
         params["exclude_indices"] = indices
 
     ds = get_partial_dataset(**params)
-    if ds_len is not None:
-        ds_len[f"{args.forget_attribute}_dataset"] = len(ds)
+    return ds
+
+
+def get_attribute_data_iter(args, transform, include_attribute=True) -> Iterator:
+    ds = get_attribute_ds(args, transform, include_attribute)
     data_iterator = get_data_iterator(ds, args.batch, args.num_workers)
     return data_iterator
+
+
+def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Glow, torch.nn.DataParallel],
+                 device, optimizer: torch.optim.Optimizer, eval_dl: DataLoader):
+    cpu_device = torch.device('cpu')
+    cls = load_classifier(device=cpu_device)
+    cls_norm = get_resnet_50_normalization()
+    z_shapes = calc_z_shapes(3, 128, args.n_flow, args.n_block)
+    attribute_index = MALE_IDX if args.forget_attribute == 'male' else GLASSES_IDX
+    assert args.alpha is None or 0.0 <= args.alpha <= 1.0
+    n_bins = 2 ** args.n_bits
+    for i in range(args.iter):
+        log_dict = {}
+        forget_batch = next(forget_iter)[0].to(device)
+        forget_p, forget_det, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
+        forget_det = forget_det.mean()
+        forget_loss, forget_p, forget_det = calc_forget_loss(forget_p, forget_det, args.img_size, n_bins)
+        if not args.debias:
+            forget_loss.mul_(-1.0)
+
+        if args.alpha < 1.0:
+            remember_batch = next(remember_iter)[0].to(device)
+            remember_p, remember_det, _ = model(remember_batch + torch.rand_like(remember_batch) / n_bins)
+            remember_det = remember_det.mean()
+            remember_loss, remember_p, remember_det = calc_forget_loss(remember_p, remember_det, args.img_size, n_bins)
+            log_dict["remember"] = {"loss": remember_loss.item(),
+                                    "log_p": remember_p.item(),
+                                    "log_det": remember_det.item()}
+            loss = args.alpha * forget_loss + (1 - args.alpha) * remember_loss
+        else:
+            loss = forget_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if args.log_every > 0 and i % args.log_every == 0:
+            eval_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, eval_dl,
+                                              reduce=False).cpu()
+            plot_bpd_histograms(i + 1, args.exp_name, eval_bpd=eval_bpd.numpy())
+
+        positive = 0
+        for n_sample in range(4):
+            cur_zs = []
+            for shape in z_shapes:
+                cur_zs.append(torch.randn(256, *shape).to(device) * 0.7)
+            with torch.no_grad():
+                images = model.module.reverse(cur_zs, reconstruct=False).to(cpu_device)
+                out = cls(cls_norm(images))
+                positive += torch.sum(out[:, attribute_index] >= 0.5).item()
+        log_dict.update({"forget": {"loss": forget_loss.item(),
+                                    "log_p": forget_p.item(),
+                                    "log_det": forget_det.item()},
+                         "positive": positive})
+        wandb.log(log_dict)
+
+        logging.info(f"Iter: {i + 1} positive: {positive} positive ratio: {(positive / (256 * 4)):.3f}")
+
+        if args.save_every is not None and (i + 1) % args.save_every == 0:
+            save_model_optimizer(args, i, model, optimizer, save_optim=False)
+    if args.save_every is not None:
+        save_model_optimizer(args, 0, model, optimizer, last=True, save_optim=False)
 
 
 def forget_attribute():
@@ -270,25 +339,45 @@ def forget_attribute():
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, device, training=True)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
-    extra_args = {}
-    forget_iter = get_attribute_data_iter(args, transform, include_attribute=True, ds_len=extra_args)
-    first_batch = next(forget_iter)[0]
-    args.base_forget_bpd = calc_batch_bpd(args, model, first_batch.to(device))
-    logging.info(f"base forget bpd: {args.base_forget_bpd}")
-    forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    remember_iter = get_attribute_data_iter(args, transform, include_attribute=False, ds_len=extra_args)
-    ref_batch = next(remember_iter)[0].to(device)
-    args.update(extra_args)
-    wandb.init(project="Dynamic Forget", entity="malnick", name=args.exp_name, config=args,
+    forget_ds = get_attribute_ds(args, transform, include_attribute=True)
+    forget_iter = get_data_iterator(forget_ds, args.batch, args.num_workers)
+    args["forget_ds_len"] = len(forget_ds)
+    forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.forget_lr)
+    remember_ds = get_attribute_ds(args, transform, include_attribute=False)
+    remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
+    args["remember_ds_len"] = len(remember_ds)
+    eval_batches, eval_dl = get_eval_data(args, remember_ds, device)
+    wandb.init(project="Forget Attribute", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
-    if args.forget_baseline:
-        vanilla_forget_baseline(forget_iter, args, model, device, forget_optimizer, ref_batch)
-    else:
-        remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        vanilla_forget(args, remember_iter, forget_iter, model, device, forget_optimizer, remember_optimizer, ref_batch)
+    forget_alpha(args, remember_iter, forget_iter, model, device, forget_optimizer, eval_dl)
 
 
 if __name__ == '__main__':
-    pass
-
+    logging.getLogger().setLevel(logging.INFO)
+    # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
+    # forget_attribute()
+    base = "experiments/forget_attribute"
+    dirs = ['male_debias_alpha_1_save', 'male_debias_alpha_0.7_save', 'glasses_debias_alpha_1',
+                 'glasses_debias_alpha_0.7']
+    # dirs = ['male_debias_alpha_1_save']
+    device = torch.device("cuda")
+    for d in dirs:
+        dir_path = base + "/" + d
+        ckpt_path = dir_path + "/checkpoints/model_last.pt"
+        args = {"ckpt_path": ckpt_path,
+                "n_flow": 32,
+                "n_block": 4,
+                "affine": False,
+                "no_lu": False,
+                "batch": 64,
+                "temp": 0.7}
+        args = EasyDict(args)
+        glow: Glow = load_model(args, device, training=False)
+        z_shapes = calc_z_shapes(3, 128, args.n_flow, args.n_block)
+        cur_zs = []
+        for shape in z_shapes:
+            cur_zs.append(torch.randn(args.batch, *shape).to(device) * args.temp)
+        with torch.no_grad():
+            images = glow.reverse(cur_zs, reconstruct=False).cpu()
+        save_image(images + 0.5, f'{dir_path}/samples.png', nrow=8)
