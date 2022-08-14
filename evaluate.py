@@ -205,51 +205,88 @@ def plot_similarity_vs_bpd(save_path: str, bpd_json: str,
     plt.close()
 
 
-def get_celeba_bpd_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution', training=False):
+def get_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution', training=False,
+                        args=None, device=None, ds=None, bpd=True, **kwargs):
     if not os.path.isdir(save_dir):
         os.mkdir(save_dir)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    args = get_args(forget=True)
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args is None:
+        args = get_args(forget=True)
     model: Glow = load_model(args, device, training=training)
-    bpds = None
-    transform = get_default_forget_transform(args.img_size, args.n_bits)
-    ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
+    scores = None
+
+    if ds is None:
+        transform = get_default_forget_transform(args.img_size, args.n_bits)
+        ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
     # ds_debug = Subset(ds, range(2048))
     # dl = DataLoader(ds_debug, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
-
 
     M = args.img_size * args.img_size * 3
     n_bins = 2 ** args.n_bits
     for i, batch in enumerate(dl, 1):
         x, _ = batch
         x = x.to(device)
+        x += torch.rand_like(x) / n_bins
         with torch.no_grad():
             log_p, logdet, _ = model(x)
             logdet = logdet.mean()
         cur_nll = - (log_p + logdet)
         assert cur_nll.nelement() == batch_size and cur_nll.ndim == 1
-        cur_bpd = cur_nll / (math.log(2) * M) + math.log(n_bins) / math.log(2)
-        if bpds is None:
-            bpds = cur_bpd.detach().cpu()
+        if bpd:
+            cur_score = cur_nll / (math.log(2) * M) + math.log(n_bins) / math.log(2)
         else:
-            bpds = torch.cat((bpds, cur_bpd.detach().cpu()))
-        print(f"Finished {i}/{len(dl)} batches")
+            cur_score = cur_nll
+        if scores is None:
+            scores = cur_score.detach().cpu()
+        else:
+            scores = torch.cat((scores, cur_score.detach().cpu()))
+        logging.info(f"Finished {i}/{len(dl)} batches")
 
-    torch.save(bpds, f"{save_dir}/bpd_distribution.pt")
+    torch.save(scores, f"{save_dir}/distribution.pt")
+    scores_prefix = "bpd" if bpd else "nll"
+    data = {'mean': torch.mean(scores).item(),
+            'std': torch.std(scores).item(),
+            'min': torch.min(scores).item(),
+            'max': torch.max(scores).item(),
+            'median': torch.median(scores).item()}
+    if 'save_suffix' in kwargs:
+        save_suffix = f'{scores_prefix}_distribution_hist_{kwargs["save_suffix"]}'
+    else:
+        save_suffix = f'{scores_prefix}_distribution_hist'
+    save_dict_as_json(data, f"{save_dir}/{save_suffix}.json")
+    plt.hist(scores.numpy(), bins=200)
+    plt.title(f'{scores_prefix} distribution histogram'.title())
+    plt.savefig(f"{save_dir}/{save_suffix}.png")
 
-    data = {'mean': torch.mean(bpds).item(),
-            'std': torch.std(bpds).item(),
-            'min': torch.min(bpds).item(),
-            'max': torch.max(bpds).item(),
-            'median': torch.median(bpds).item()}
-    save_dict_as_json(data, f"{save_dir}/bpd_distribution.json")
-    plt.hist(bpds.numpy(), bins=200)
-    plt.title('BPD distribution histogram')
-    plt.savefig(f"{save_dir}/bpd_distribution_hist.png")
+
+def plot_distribution(tensors_file, save_path, normal_estimation=True, density=True, title=None, legend=None):
+    scores = -1 * torch.load(tensors_file).numpy()
+    n_bins = 300
+    plt.figure(figsize=(6, 4))
+    # Plot histogram
+    plt.style.use("seaborn-dark")
+    plt.hist(scores, bins=n_bins, density=density, color='blue')
+    # Plot normal distribution
+    if normal_estimation:
+        values_min = np.min(scores)
+        values_max = np.max(scores)
+        mu = np.mean(scores)
+        std = np.std(scores)
+        gaussian_pdf = lambda x: 1 / (std * np.sqrt(2 * np.pi)) * np.exp(-(x - mu) ** 2 / (2 * std ** 2))
+        plt.plot(np.linspace(values_min, values_max, n_bins),
+                 gaussian_pdf(np.linspace(values_min, values_max, n_bins)), color='red')
+    plt.grid(False)
+    if title:
+        plt.title(title)
+    if legend:
+        plt.legend(legend)
+
+    plt.savefig(save_path)
 
 
 if __name__ == '__main__':
-    # wandb.init(project='tmp-debug', name=f'hist_{torch.randint(20, (1,)).item()}', entity="malnick")
     logging.getLogger().setLevel(logging.INFO)
-    pass
+    plot_distribution('outputs/celeba_val_nll/distribution.pt', 'outputs/celeba_val_nll/distribution_w_gauss.png',
+                      legend=[r'$log(p^{\theta}_X(x))$', r'$\mathcal{N}(\mu, \sigma)$'])
