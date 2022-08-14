@@ -6,9 +6,8 @@ import logging
 import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
-    compute_dataset_bpd, get_default_forget_transform, compute_dataloader_bpd
+    compute_dataset_bpd, get_default_forget_transform
 import os
-from forget import args2dataset
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 from glob import glob
