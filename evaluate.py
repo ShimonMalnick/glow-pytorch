@@ -12,9 +12,10 @@ import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 from glob import glob
 from model import Glow
-from typing import Iterable, Tuple, Dict, List
+from typing import Iterable, Tuple, Dict, List, Union
 from datasets import CelebAPartial
 import matplotlib
+
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
@@ -204,10 +205,10 @@ def plot_similarity_vs_bpd(save_path: str, bpd_json: str,
     plt.close()
 
 
-def get_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution', training=False,
-                        args=None, device=None, ds=None, bpd=True, **kwargs):
+def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution', training=False,
+                            args=None, device=None, ds=None):
     if not os.path.isdir(save_dir):
-        os.mkdir(save_dir)
+        os.makedirs(save_dir)
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args is None:
@@ -233,36 +234,41 @@ def get_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_di
             logdet = logdet.mean()
         cur_nll = - (log_p + logdet)
         assert cur_nll.nelement() == batch_size and cur_nll.ndim == 1
-        if bpd:
-            cur_score = cur_nll / (math.log(2) * M) + math.log(n_bins) / math.log(2)
-        else:
-            cur_score = cur_nll
+        cur_score = cur_nll
         if scores is None:
             scores = cur_score.detach().cpu()
         else:
             scores = torch.cat((scores, cur_score.detach().cpu()))
         logging.info(f"Finished {i}/{len(dl)} batches")
+    bpd = scores / (math.log(2) * M) + math.log(n_bins) / math.log(2)
+    torch.save(scores, f"{save_dir}/nll_distribution.pt")
+    data = {'nll':
+                {'mean': torch.mean(scores).item(),
+                 'std': torch.std(scores).item(),
+                 'min': torch.min(scores).item(),
+                 'max': torch.max(scores).item(),
+                 'median': torch.median(scores).item()},
+            'bpd':
+                {'mean': torch.mean(bpd).item(),
+                 'std': torch.std(bpd).item(),
+                 'min': torch.min(bpd).item(),
+                 'max': torch.max(bpd).item(),
+                 'median': torch.median(bpd).item()}}
+    save_dict_as_json(data, f"{save_dir}/distribution.json")
+    plot_distribution(-1 * scores.numpy(), f"{save_dir}/ll_distribution_hist.png", normal_estimation=True, density=True,
+                      title=None, legend=[r'$log(p^{\theta}_X(x))$', r'$\mathcal{N}(\mu, \sigma)$'])
+    plot_distribution(bpd.numpy(), f"{save_dir}/bpd_distribution_hist.png", normal_estimation=True, density=True,
+                      title=None, legend=[r'$BPD(x)$', r'$\mathcal{N}(\mu, \sigma)$'])
 
-    torch.save(scores, f"{save_dir}/distribution.pt")
-    scores_prefix = "bpd" if bpd else "nll"
-    data = {'mean': torch.mean(scores).item(),
-            'std': torch.std(scores).item(),
-            'min': torch.min(scores).item(),
-            'max': torch.max(scores).item(),
-            'median': torch.median(scores).item()}
-    if 'save_suffix' in kwargs:
-        save_suffix = f'{scores_prefix}_distribution_hist_{kwargs["save_suffix"]}'
+
+def plot_distribution(tensors: Union[str, np.ndarray], save_path, normal_estimation=True, density=True,
+                      title=None, legend=None, n_bins=80):
+    if isinstance(tensors, str):
+        scores = torch.load(tensors).numpy()
+    elif isinstance(tensors, np.ndarray):
+        scores = tensors
     else:
-        save_suffix = f'{scores_prefix}_distribution_hist'
-    save_dict_as_json(data, f"{save_dir}/{save_suffix}.json")
-    plt.hist(scores.numpy(), bins=200)
-    plt.title(f'{scores_prefix} distribution histogram'.title())
-    plt.savefig(f"{save_dir}/{save_suffix}.png")
-
-
-def plot_distribution(tensors_file, save_path, normal_estimation=True, density=True, title=None, legend=None):
-    scores = -1 * torch.load(tensors_file).numpy()
-    n_bins = 300
+        raise ValueError(f"tensors must be either a path to a file or a numpy array")
     plt.figure(figsize=(6, 4))
     # Plot histogram
     plt.style.use("seaborn-dark")
@@ -283,9 +289,33 @@ def plot_distribution(tensors_file, save_path, normal_estimation=True, density=T
         plt.legend(legend)
 
     plt.savefig(save_path)
+    plt.close()
+
+
+def compute_wassrstein_2_dist(distribution_jsons: List[str]) -> float:
+    mus = []
+    sigmas = []
+    for dist in distribution_jsons:
+        with open(dist, 'r') as f:
+            data = json.load(f)
+            mus.append(data['mean'])
+            sigmas.append(data['std'])
+    return (mus[0] - mus[1]) ** 2 + (sigmas[0] - sigmas[1]) ** 2
+
+
+def compute_model_distribution(exp_dir, args=None):
+    if args is None:
+        args = get_args(forget=True)
+    args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    for split in ["valid", "train"]:
+        save_dir = f"{exp_dir}/distribution_stats/{split}"
+        ds = CelebA(root=CELEBA_ROOT, target_type='identity', split=split,
+                    transform=get_default_forget_transform(args.img_size, args.n_bits))
+        compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds)
 
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
-    plot_distribution('outputs/celeba_val_nll/distribution.pt', 'outputs/celeba_val_nll/distribution_w_gauss.png',
-                      legend=[r'$log(p^{\theta}_X(x))$', r'$\mathcal{N}(\mu, \sigma)$'])
+    pass
+
