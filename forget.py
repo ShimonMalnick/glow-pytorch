@@ -77,7 +77,7 @@ def calc_batch_bpd(args, model, batch, reduce=True) -> Union[float, torch.Tensor
     n_bins = 2 ** args.n_bits
     M = args.img_size * args.img_size * 3
     with torch.no_grad():
-        log_p, logdet, _ = model(batch)
+        log_p, logdet, _ = model(batch + torch.rand_like(batch) / n_bins)
     if reduce:
         cur_nll = - torch.sum(log_p + logdet.mean()).item()
     else:
