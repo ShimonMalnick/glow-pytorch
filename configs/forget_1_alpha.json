@@ -18,13 +18,13 @@
     "forget_size": 1,
     "forget_every": null,
     "log_every": 1,
-    "save_every": null,
+    "save_every": 10000,
     "forget_lr": 5e-5,
     "scheduler_step": null,
     "scheduler_gamma": null,
-    "forget_thresh": 2.0,
+    "forget_thresh": 4.0,
     "num_ref_batches": 3,
-    "adaptive_loss": false,
+    "adaptive_loss": true,
     "forget_baseline": false,
     "alpha": 0.3
 }
