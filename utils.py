@@ -4,6 +4,8 @@ import os
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
 from typing import Union, List
+
+import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
@@ -442,3 +444,7 @@ def images_to_gif(path: Union[str, List[str]], out_path, duration=300, **kwargs)
     assert len(images) > 0, "No images found in directory"
     images[0].save(out_path, save_all=True, optimize=False, append_images=images[1:], loop=0,
                    duration=duration, **kwargs)
+
+
+def np_gaussian_pdf(x, mu, sigma):
+    return 1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))

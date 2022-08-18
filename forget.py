@@ -118,8 +118,8 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
         indices = compute_relevant_indices(args.eval_mu, args.eval_std, args.forget_thresh, model,
                                            forget_batch, n_bins, n_pixels)
         if indices.numel() == 0:
-            logging.info("breaking after {} iterations".format(i + 1))
-            wandb.log({f"achieved_thresh": i + 1})
+            logging.info("breaking after {} iterations".format(i))
+            wandb.log({f"achieved_thresh": i})
             break
         else:
             forget_batch = forget_batch[indices]
