@@ -6,7 +6,7 @@ import logging
 import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
-    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf
+    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, data_parallel2normal_state_dict
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -15,7 +15,6 @@ from model import Glow
 from typing import Iterable, Tuple, Dict, List, Union
 from datasets import CelebAPartial
 import matplotlib
-
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
@@ -365,12 +364,13 @@ def plot_2_histograms_w_wasserstein(model_dist: str, baseline_hist: str, save_pa
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
+
     # jsons = ["/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/baseline_nll_distribution/val/distribution.json",
     #          "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_paper/1_image_alpha_0.3_5e-5/distribution_stats/valid/distribution.json"]
     model_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_paper/1_image_alpha_0.3_5e-5/distribution_stats/valid/nll_distribution.pt"
     baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/baseline_nll_distribution/val/distribution.pt"
 
-    plot_distribution(baseline_dist, "outputs/figs/baseline_val_distribution.svg")
+    # plot_distribution(baseline_dist, "outputs/figs/baseline_val_distribution.svg")
     # print(compute_wassrstein_2_dist(jsons, ["nll", "bpd"]))
     # plot_2_histograms_w_wasserstein(model_dist, baseline_dist, "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_paper/1_image_alpha_0.3_5e-5/distribution_stats/valid/dist_distance.png")
 

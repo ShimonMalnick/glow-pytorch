@@ -87,6 +87,8 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--alpha', help='if given, training will be done with loss updates of both forget and'
                                             ' remember data in every update, by using'
                                             ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
+        parser.add_argument('--gamma', help='proportion between remembering and forcing the distributions proximity',
+                            type=float)
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -238,16 +240,21 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
     return bpd
 
 
-def load_model(args, device, training=False) -> Union[Glow, torch.nn.DataParallel]:
-    model_single = Glow(3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu)
-    model = torch.nn.DataParallel(model_single)
+def load_model(args, device=None, training=False, device_ids=None, output_device=None) -> Union[Glow, torch.nn.DataParallel]:
+    model = Glow(3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu)
     model.load_state_dict(torch.load(args.ckpt_path, map_location=lambda storage, loc: storage))
-    model.to(device)
-    logging.debug("Loaded model successfully")
-    if training:
+    if not training:
+        logging.debug("device: {}".format(device))
+        model = model.to(device)
+        logging.debug("Loaded model on single device successfully")
         return model
     else:
-        return model_single
+        assert device is not None or device_ids is not None
+        if device_ids is not None:
+            device = device_ids[0]
+        model_parallel = torch.nn.DataParallel(model, device_ids=device_ids, output_device=output_device)
+        model_parallel = model_parallel.to(device)
+        return model_parallel
 
 
 def quantize_image(img, n_bits):
@@ -448,3 +455,15 @@ def images_to_gif(path: Union[str, List[str]], out_path, duration=300, **kwargs)
 
 def np_gaussian_pdf(x, mu, sigma):
     return 1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
+
+
+def data_parallel2normal_state_dict(dict_path: str, out_path: str):
+    state_dict = torch.load(dict_path)
+    # create new OrderedDict that does not contain `module.`
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:]  # remove `module.`
+        new_state_dict[name] = v
+
+    torch.save(new_state_dict, out_path)

@@ -1,5 +1,5 @@
 {
-    "batch": 16,
+    "batch": 8,
     "iter": 200,
     "n_flow": 32,
     "n_block": 4,
@@ -13,12 +13,12 @@
     "exp_name": "1_image_alpha_0.3_5e-5",
     "num_workers": 16,
     "devices": -1,
-    "ckpt_path": "models/baseline/continue_celeba/model_090001.pt",
+    "ckpt_path": "models/baseline/continue_celeba/model_090001_single.pt",
     "forget_images": "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_first/train/images",
     "forget_size": 1,
     "forget_every": null,
     "log_every": 1,
-    "save_every": 10000,
+    "save_every": null,
     "forget_lr": 5e-5,
     "scheduler_step": null,
     "scheduler_gamma": null,
@@ -26,5 +26,6 @@
     "num_ref_batches": 3,
     "adaptive_loss": true,
     "forget_baseline": false,
-    "alpha": 0.3
+    "alpha": 0.3,
+    "gamma": 0.5
 }
