@@ -6,7 +6,7 @@ import logging
 import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
-    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, data_parallel2normal_state_dict
+    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, kl_div_univariate_gaussian
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -14,6 +14,8 @@ from glob import glob
 from model import Glow
 from typing import Iterable, Tuple, Dict, List, Union
 from datasets import CelebAPartial
+from easydict import EasyDict as edict
+from forget import args2dataset
 import matplotlib
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
@@ -261,27 +263,23 @@ def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bp
 
 
 def plot_distribution(tensors: Union[str, np.ndarray], save_path, normal_estimation=True, density=True,
-                      title=None, legend=None, n_bins_plot=80):
+                      title=None, legend=None):
     if isinstance(tensors, str):
         scores = torch.load(tensors).numpy()
     elif isinstance(tensors, np.ndarray):
         scores = tensors
     else:
         raise ValueError(f"tensors must be either a path to a file or a numpy array")
-    import matplotlib as mpl
     from pylab import cm
-    import matplotlib.font_manager as fm
-    font_names = [f.name for f in fm.fontManager.ttflist]
-    # print(font_names)
-    # mpl.rcParams['font.family'] = 'Avenir'
-    plt.rcParams['font.size'] = 12
-    plt.rcParams['axes.linewidth'] = 2
+    plt.rcParams['font.size'] = 10
+    plt.rcParams['axes.linewidth'] = 1.5
     # Generate 2 colors from the 'tab10' colormap
     colors = cm.get_cmap('tab20')
     plt.figure(figsize=(6, 4))
+    n_bins_plot = int(np.sqrt(len(scores)))
     # Plot histogram
     # legend = [r"$\logP_X^\theta$", r"$\mathcal{N}(\mu,\sigma)$"]
-    plt.hist(scores, bins=n_bins_plot, density=density, color=colors(0), label=r"$\logP_X^\theta$")
+    plt.hist(scores, bins=n_bins_plot, density=density, color=colors(0), label=r"$-\logP_X^\theta$")
     # Plot normal distribution
     if normal_estimation:
         values_min = np.min(scores)
@@ -291,7 +289,11 @@ def plot_distribution(tensors: Union[str, np.ndarray], save_path, normal_estimat
         plt.plot(np.linspace(values_min, values_max, n_bins_plot),
                  np_gaussian_pdf(np.linspace(values_min, values_max, n_bins_plot), mu, std), color=colors(5),
                  label=r"$\mathcal{N}(\mu_\theta,\sigma_\theta^2)$")
+        plt.plot([], [], ' ', label=fr"$\mu_\theta={mu:.1f}$")
+        plt.plot([], [], ' ', label=fr"$\sigma_\theta={std:.1f}$")
     plt.grid(False)
+    plt.xlabel(r'$-\logP_X^\theta(x)$')
+    plt.ylabel('Density')
     if title:
         plt.title(title)
     # if legend:
@@ -318,7 +320,7 @@ def compute_wassrstein_2_dist(distribution_jsons: List[str], keys: List[str]) ->
     return res
 
 
-def compute_model_distribution(exp_dir, args=None):
+def compute_model_distribution(exp_dir, args=None, partial=-1):
     if args is None:
         args = get_args(forget=True)
     args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
@@ -327,50 +329,95 @@ def compute_model_distribution(exp_dir, args=None):
         save_dir = f"{exp_dir}/distribution_stats/{split}"
         ds = CelebA(root=CELEBA_ROOT, target_type='identity', split=split,
                     transform=get_default_forget_transform(args.img_size, args.n_bits))
+        if partial > 0:
+            save_dir += f"_partial_{partial}"
+            indices = torch.randperm(len(ds))[:partial]
+            ds = Subset(ds, indices)
         compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds)
 
 
 def plot_2_histograms_w_wasserstein(model_dist: str, baseline_hist: str, save_path: str):
-    M = 128 * 128 * 3
-    n_bins = 2 ** 5
-    n_bins_plot = 80
-    model_dist = (torch.load(model_dist) / (math.log(2) * M) + math.log(n_bins) / math.log(2)).numpy()
-    baseline_dist = (torch.load(baseline_hist) / (math.log(2) * M) + math.log(n_bins) / math.log(2)).numpy()
+    # M = 128 * 128 * 3
+    # n_bins = 2 ** 5
+    # model_dist = (torch.load(model_dist) / (math.log(2) * M) + math.log(n_bins) / math.log(2)).numpy()
+    # baseline_dist = (torch.load(baseline_hist) / (math.log(2) * M) + math.log(n_bins) / math.log(2)).numpy()
+    model_dist = torch.load(model_dist).numpy()
+    baseline_dist = torch.load(baseline_hist).numpy()
+    from pylab import cm
+    import matplotlib.font_manager as fm
+    plt.rcParams['font.size'] = 10
+    plt.rcParams['axes.linewidth'] = 1.5
+    # Generate 2 colors from the 'tab10' colormap
+    colors = cm.get_cmap('tab20')
     plt.figure(figsize=(6, 4))
+    plot_n_bins = int(max(np.sqrt(len(model_dist)), np.sqrt(len(baseline_dist))))
+
     # Plot histogram
-    plt.style.use("seaborn-dark")
+
     # plt.hist(model_dist, bins=n_bins_plot, density=True, color='blue', alpha=0.5, label=r"$log(p^{\theta'}_X(x))$")
     # plt.hist(baseline_dist, bins=n_bins_plot, density=True, color='red', alpha=0.5, label=r'$log(p^{\theta}_X(x))$')
     # Plot normal distribution
     values_min = min(np.min(model_dist), np.min(baseline_dist))
     values_max = max(np.max(model_dist), np.max(baseline_dist))
-    x_vals = np.linspace(values_min, values_max, n_bins_plot)
+    x_vals = np.linspace(values_min, values_max, plot_n_bins)
 
     model_mu, model_sigma = np.mean(model_dist), np.std(model_dist)
-    plt.plot(x_vals, np_gaussian_pdf(x_vals, model_mu, model_sigma), color='black',
-             label=r"Censored")
+    plt.plot(x_vals, np_gaussian_pdf(x_vals, model_mu, model_sigma), color=colors(0),
+             label=r"$\mathcal{N}(\theta_F)$" + "\n" + rf"$\mu={model_mu:.0f}$" + "\n" + rf"$\sigma={model_sigma:.0f}$")
     baseline_mu, baseline_sigma = np.mean(baseline_dist), np.std(baseline_dist)
-    plt.plot(x_vals, np_gaussian_pdf(x_vals, baseline_mu, baseline_sigma), color='blueviolet',
-             label=r'Baseline')
+    plt.plot(x_vals, np_gaussian_pdf(x_vals, baseline_mu, baseline_sigma), color=colors(5),
+             label=r"$\mathcal{N}(\theta_B)$" + "\n" + rf"$\mu={baseline_mu:.0f}$" + "\n" + rf"$\sigma={baseline_sigma:.0f}$")
     wasserstein_distance = (model_mu - baseline_mu) ** 2 + (model_sigma - baseline_sigma) ** 2
-    plt.plot([], [], ' ', label=f"Wasserstein\n distance: {wasserstein_distance:.3f}")
+    kldiv = kl_div_univariate_gaussian(baseline_mu, baseline_sigma, model_mu, model_sigma)
+    print(f"KL(baseline, finetuned) =  {kldiv:.2f}")
+    print(f"mu absolute difference: ", round(abs(model_mu - baseline_mu)))
+    print(f"mu squared difference: ", round(abs(model_mu - baseline_mu) ** 2))
+    print(f"sigma absolute difference: ", round(abs(model_sigma - baseline_sigma)))
+    print(f"sigma squared difference: ", round(abs(model_sigma - baseline_sigma) ** 2))
+    print(f"wasserstein distance: {wasserstein_distance:.0f}")
+    print("Relative distance between the means using the standard deviations, i.e. abs(mean_1 - mean_2) / std")
+    print(f"Using the baseline model std we get: {(abs(model_mu - baseline_mu) / baseline_sigma):.3f}")
+    print(f"Using the finetuned model std we get: {(abs(model_mu - baseline_mu) / model_sigma):.3f}")
+    plt.plot([], [], ' ', label=r"$\mathcal{A}(\theta_F,\theta_B)=$" + str(round(wasserstein_distance)))
+    plt.plot([], [], ' ', label=r"$KL(\theta_F || \theta_B)=$" + fr"{kldiv:.2f}")
     # plt.text(0.2, 2.8, f"Wasserstein distance: {wasserstein_distance:.3f}", fontsize='medium')
     plt.grid(False)
-    plt.legend(loc='upper left')
+    plt.legend(loc='upper right')
+    plt.xlabel(r"$-\log(p^{\theta'}_X(x))$")
+    plt.subplots_adjust(bottom=0.15)
+    plt.ylabel('Density')
 
     plt.savefig(save_path)
     plt.close()
 
 
+def evaluate_forget_score(exp_dir, reps=10):
+    with open(f"{exp_dir}/args.json", 'r') as f:
+        args = edict(json.load(f))
+    args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
+    forget_ds = args2dataset(args, "forget", transform)
+    model = load_model(args, device)
+    model.eval()
+    batch = torch.stack([forget_ds[i][0] for i in range(len(forget_ds))]).to(device)
+    n_bins = 2 ** args.n_bits
+    scores = None
+    with torch.no_grad():
+        for i in range(reps):
+            cur_batch = batch + torch.rand_like(batch) / n_bins
+            log_p, logdet, _ = model(cur_batch)
+            cur_scores = -(log_p + logdet.mean())
+            if scores is None:
+                scores = cur_scores
+            else:
+                scores += cur_scores
+    scores /= reps
+    os.makedirs(f"{exp_dir}/distribution_stats", exist_ok=True)
+    with open(f"{exp_dir}/distribution_stats/forget_score.txt", "w") as out_file:
+        out_file.writelines([f"{score.item():.3f}\n" for score in scores])
+
+
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
-
-    # jsons = ["/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/baseline_nll_distribution/val/distribution.json",
-    #          "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_paper/1_image_alpha_0.3_5e-5/distribution_stats/valid/distribution.json"]
-    model_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_paper/1_image_alpha_0.3_5e-5/distribution_stats/valid/nll_distribution.pt"
-    baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/baseline_nll_distribution/val/distribution.pt"
-
-    # plot_distribution(baseline_dist, "outputs/figs/baseline_val_distribution.svg")
-    # print(compute_wassrstein_2_dist(jsons, ["nll", "bpd"]))
-    # plot_2_histograms_w_wasserstein(model_dist, baseline_dist, "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_paper/1_image_alpha_0.3_5e-5/distribution_stats/valid/dist_distance.png")
-
+    pass
