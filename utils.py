@@ -242,7 +242,11 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
 
 def load_model(args, device=None, training=False, device_ids=None, output_device=None) -> Union[Glow, torch.nn.DataParallel]:
     model = Glow(3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu)
-    model.load_state_dict(torch.load(args.ckpt_path, map_location=lambda storage, loc: storage))
+    state_dict = torch.load(args.ckpt_path, map_location=lambda storage, loc: storage)
+    first_key = list(state_dict.keys())[0]
+    if first_key.startswith("module."):  # for network saved as Dataparallel accidentally
+        state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     if not training:
         logging.debug("device: {}".format(device))
         model = model.to(device)
@@ -451,6 +455,13 @@ def images_to_gif(path: Union[str, List[str]], out_path, duration=300, **kwargs)
     assert len(images) > 0, "No images found in directory"
     images[0].save(out_path, save_all=True, optimize=False, append_images=images[1:], loop=0,
                    duration=duration, **kwargs)
+
+
+def kl_div_univariate_gaussian(mu_p, sigma_p, mu_q, sigma_q):
+    """
+    Compute KL(P || Q) given parameters of univariate gaussian distributions
+    """
+    return math.log(sigma_q / sigma_p) + ((sigma_p ** 2 + (mu_p - mu_q) ** 2) / (2 * sigma_q ** 2)) - 0.5
 
 
 def np_gaussian_pdf(x, mu, sigma):
