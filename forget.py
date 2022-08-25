@@ -93,7 +93,6 @@ def prob2bpd(prob, n_bins, n_pixels):
     return - prob / (math.log(2) * n_pixels) + math.log(n_bins) / math.log(2)
 
 
-# todo: store current mean and mu for threshold
 def compute_relevant_indices(mu, std, thresh, model, forget_batch, n_bins, n_pixels) -> torch.Tensor:
     with torch.no_grad():
         log_p, logdet, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
@@ -134,12 +133,23 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
         indices = compute_relevant_indices(args.eval_mu, args.eval_std, args.forget_thresh, model,
                                            forget_batch, n_bins, n_pixels)
         if indices.numel() == 0:
-            logging.info("breaking after {} iterations".format(i))
-            wandb.log({f"achieved_thresh": i})
-            break
-        else:
-            forget_batch = forget_batch[indices]
-            wandb.log({"batch size": forget_batch.shape[0]}, commit=False)
+            num_iterations = math.ceil(args.forget_size / args.batch)
+            logging.info("A batch above threshold after {} iterations 1/{}".format(i, num_iterations))
+            count = 1
+            for idx in range(num_iterations - 1):
+                forget_batch = next(forget_iter)[0].to(main_device)
+                indices = compute_relevant_indices(args.eval_mu, args.eval_std, args.forget_thresh, model,
+                                                   forget_batch, n_bins, n_pixels)
+                if indices.numel() != 0:
+                    break
+                logging.info("A batch above threshold after {} iterations {}/{}".format(i, idx + 2, num_iterations))
+                count += 1
+            if count == num_iterations:
+                logging.info("breaking after {} iterations".format(i))
+                wandb.log({f"achieved_thresh": i})
+                break
+        forget_batch = forget_batch[indices]
+        wandb.log({"batch size": forget_batch.shape[0]}, commit=False)
         forget_p, forget_det, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
         forget_det = forget_det.mean()
         if args.adaptive_loss:
@@ -190,9 +200,9 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
         logging.info(f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
 
         if args.save_every is not None and (i + 1) % args.save_every == 0:
-            save_model_optimizer(args, i, model, optimizer, save_optim=False)
+            save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
     if args.save_every is not None:
-        save_model_optimizer(args, 0, model, optimizer, last=True, save_optim=False)
+        save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
 
 
 def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Glow, torch.nn.DataParallel],
