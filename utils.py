@@ -518,10 +518,23 @@ def args2dataset(args, ds_type, transform):
     return ds
 
 
-def nll_to_sigma_normalized(nll: float, mean: float, std: float, rounding=3) -> float:
+def nll_to_sigma_normalized(nll: Union[torch.FloatTensor, float],
+                            mean: Union[torch.FloatTensor, float],
+                            std: Union[torch.FloatTensor, float],
+                            rounding: int = 2) -> float:
     """
     Return a float (rounded according to the rounding param) with the normalized distance of the nll from the given mean
     w.r.t the given sigma, i.e. (nll - mean) / sigma. when the value is positive it means the deviation is positive
     (the right side of the x axis) and when negative it is negative (the left side of the x axis).
     """
-    return round((nll - mean) / std, rounding)
+    is_tensor = False
+    for elem in [nll, mean, std]:
+        if isinstance(elem, torch.FloatTensor):
+            assert elem.nelement() == 1, "nll, mean and std must be scalars"
+            is_tensor = True
+        elif not isinstance(elem, float):
+            raise ValueError("nll, mean and std must be either torch.FloatTensor or float")
+    res = (nll - mean) / std
+    if is_tensor:
+        res = res.item()
+    return round(res, rounding)
