@@ -6,12 +6,13 @@ from easydict import EasyDict
 from model import Glow
 import torch
 import torch.nn.functional as F
-from utils import get_args, load_model, save_dict_as_json, \
-    save_model_optimizer, get_partial_dataset, compute_dataloader_bpd, get_default_forget_transform
+from utils import get_args, load_model, save_dict_as_json, save_model_optimizer, compute_dataloader_bpd,\
+    get_default_forget_transform, kl_div_univariate_gaussian, args2dataset
 from torch.utils.data import DataLoader, Subset, Dataset
 from torch.optim.lr_scheduler import StepLR
 from typing import Iterator, Dict, Union, List, Tuple, Optional
 from datasets import CelebAPartial, ForgetSampler
+from evaluate import full_experiment_evaluation
 import wandb
 import logging
 import matplotlib
@@ -103,7 +104,6 @@ def compute_relevant_indices(mu, std, thresh, model, forget_batch, n_bins, n_pix
 
 
 def get_log_p_parameters(n_bins, n_pixel, dist, device=None):
-
     val = -log(n_bins) * n_pixel
     val += dist
     val = -val / (log(2) * n_pixel)
@@ -173,14 +173,12 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
         remember_p, remember_det, _ = model(remember_batch)
         remember_det = remember_det.mean()
         regular_loss, regular_p, regular_det = calc_forget_loss(remember_p, remember_det, args.img_size, n_bins,
-                                                             weights=None)
+                                                                weights=None)
         remember_dist = remember_p + remember_det
-        # remember_mean, remember_std = torch.mean(remember_dist), torch.std(remember_dist)
         remember_mean, remember_std = get_log_p_parameters(n_bins, n_pixels, remember_dist)
-        remember_loss = args.gamma * ((orig_mean - remember_mean) ** 2 + (orig_std - remember_std) ** 2) \
-                        + (1 - args.gamma) * regular_loss
-        # remember_loss = remember_loss / (log(2) * n_pixels)  # just to reduce the magnitude of the value to the
-        # proportion of forget loss
+        kl_loss = kl_div_univariate_gaussian(remember_mean, remember_std, orig_mean, orig_std) + \
+                  kl_div_univariate_gaussian(orig_mean, orig_std, remember_mean, remember_std)
+        remember_loss = args.gamma * kl_loss + (1 - args.gamma) * regular_loss
 
         loss = args.alpha * forget_loss + (1 - args.alpha) * remember_loss
 
@@ -203,6 +201,8 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
             save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
     if args.save_every is not None:
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
+
+    return model
 
 
 def forget(args, remember_iter: Iterator, forget_iter: Iterator, model: Union[Glow, torch.nn.DataParallel],
@@ -283,42 +283,6 @@ def save_forget_checkpoint(args, forget_optimizer, iter_num, model, remember_opt
             remember_optimizer.state_dict(),
             f'experiments/{args.exp_name}/checkpoints/regular_optim_{model_id}.pt'
         )
-
-
-def args2dset_params(args, ds_type) -> Dict:
-    """
-    Returns a dictionary of parameters to be passed to the dataset constructor.
-    :param args: arguments determining the images/identities to forget/remember.
-    :param ds_type: one of 'forget' or 'remember'
-    :return: dictionary contating the parameters to be passed to the dataset constructor
-    """
-    assert ds_type in ['forget', 'remember'], "ds_type must be one of 'forget' or 'remember'"
-    out = {"include_only_identities": None,
-           "exclude_identities": None,
-           "include_only_images": None,
-           "exclude_images": None}
-    if 'data_split' in args and args.data_split in ['train', 'all']:
-        out['split'] = args.data_split
-    if ds_type == 'forget':
-        if args.forget_identity:
-            out["include_only_identities"] = [args.forget_identity]
-        elif args.forget_images:
-            assert args.forget_size, "must specify forget_size if forget_images is specified"
-            out["include_only_images"] = os.listdir(args.forget_images)[:args.forget_size]
-    if ds_type == 'remember':
-        if args.forget_identity:
-            out["exclude_identities"] = [args.forget_identity]
-        elif args.forget_images:
-            assert args.forget_size, "must specify forget_size if forget_images is specified"
-            out["exclude_images"] = os.listdir(args.forget_images)[:args.forget_size]
-
-    return out
-
-
-def args2dataset(args, ds_type, transform):
-    ds_params = args2dset_params(args, ds_type)
-    ds = get_partial_dataset(transform=transform, **ds_params)
-    return ds
 
 
 def args2data_iter(args, ds_type, transform) -> Iterator:
@@ -454,7 +418,8 @@ def get_random_batch(ds: Dataset, batch_size, device=None) -> Tuple[torch.Tensor
     return batch, indices
 
 
-def get_eval_data(args, remember_ds, device=None) -> Tuple[List[Tuple[str, torch.Tensor, torch.Tensor, Dict]], DataLoader]:
+def get_eval_data(args, remember_ds, device=None) -> Tuple[
+    List[Tuple[str, torch.Tensor, torch.Tensor, Dict]], DataLoader]:
     eval_batches = []
     if args.num_ref_batches is not None:
         for i in range(1, args.num_ref_batches + 1):
@@ -476,9 +441,10 @@ def main():
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_wasserstein_2")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_kl")
     logging.info(args)
-    model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices, output_device=train_devices[0])
+    model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
+                                              output_device=train_devices[0])
     original_model: Glow = load_model(args, device=original_model_device, training=False)
     original_model.requires_grad_(False)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
@@ -492,7 +458,7 @@ def main():
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)
     eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
-    wandb.init(project="Forget Wasserstein", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="Forget-KL", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
@@ -507,10 +473,11 @@ def main():
             scheduler = None
         if args.alpha is not None:
             logging.info("Starting forget alpha procedure")
-            forget_alpha(args, remember_iter, forget_iter, model,
+            finetuned_model = forget_alpha(args, remember_iter, forget_iter, model,
                          original_model, train_devices, original_model_device,
                          forget_optimizer, eval_batches, eval_dl,
-                         forget_ref_data, scheduler)
+                         forget_ref_data, scheduler=scheduler)
+            full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
         else:
             remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
             forget(args, remember_iter, forget_iter, model, None, forget_optimizer, remember_optimizer,
