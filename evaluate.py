@@ -6,7 +6,8 @@ import logging
 import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
-    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, kl_div_univariate_gaussian
+    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, kl_div_univariate_gaussian, args2dataset, \
+    BASELINE_MODEL_PATH, nll_to_sigma_normalized
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -15,8 +16,8 @@ from model import Glow
 from typing import Iterable, Tuple, Dict, List, Union
 from datasets import CelebAPartial
 from easydict import EasyDict as edict
-from forget import args2dataset
 import matplotlib
+
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
@@ -207,14 +208,17 @@ def plot_similarity_vs_bpd(save_path: str, bpd_json: str,
 
 
 def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bpd_distribution', training=False,
-                            args=None, device=None, ds=None):
+                            args=None, device=None, ds=None, **kwargs):
     if not os.path.isdir(save_dir):
         os.makedirs(save_dir)
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args is None:
         args = get_args(forget=True)
-    model: Glow = load_model(args, device, training=training)
+    if 'model' in kwargs:
+        model: Glow = kwargs['model']
+    else:
+        model: Glow = load_model(args, device, training=training)
     scores = None
 
     if ds is None:
@@ -320,10 +324,13 @@ def compute_wassrstein_2_dist(distribution_jsons: List[str], keys: List[str]) ->
     return res
 
 
-def compute_model_distribution(exp_dir, args=None, partial=-1):
+def compute_model_distribution(exp_dir, args=None, partial=-1, **kwargs):
     if args is None:
         args = get_args(forget=True)
-    args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
+    if 'baseline' in kwargs:
+        args.ckpt_path = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/model_090001_single.pt"
+    else:
+        args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     for split in ["valid", "train"]:
         save_dir = f"{exp_dir}/distribution_stats/{split}"
@@ -333,29 +340,24 @@ def compute_model_distribution(exp_dir, args=None, partial=-1):
             save_dir += f"_partial_{partial}"
             indices = torch.randperm(len(ds))[:partial]
             ds = Subset(ds, indices)
-        compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds)
+        compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds, **kwargs)
 
 
-def plot_2_histograms_w_wasserstein(model_dist: str, baseline_hist: str, save_path: str):
-    # M = 128 * 128 * 3
-    # n_bins = 2 ** 5
-    # model_dist = (torch.load(model_dist) / (math.log(2) * M) + math.log(n_bins) / math.log(2)).numpy()
-    # baseline_dist = (torch.load(baseline_hist) / (math.log(2) * M) + math.log(n_bins) / math.log(2)).numpy()
+def plot_2_histograms_distributions(model_dist: str, baseline_hist: str, save_path: str):
     model_dist = torch.load(model_dist).numpy()
     baseline_dist = torch.load(baseline_hist).numpy()
     from pylab import cm
-    import matplotlib.font_manager as fm
     plt.rcParams['font.size'] = 10
     plt.rcParams['axes.linewidth'] = 1.5
-    # Generate 2 colors from the 'tab10' colormap
     colors = cm.get_cmap('tab20')
     plt.figure(figsize=(6, 4))
     plot_n_bins = int(max(np.sqrt(len(model_dist)), np.sqrt(len(baseline_dist))))
 
     # Plot histogram
 
-    # plt.hist(model_dist, bins=n_bins_plot, density=True, color='blue', alpha=0.5, label=r"$log(p^{\theta'}_X(x))$")
-    # plt.hist(baseline_dist, bins=n_bins_plot, density=True, color='red', alpha=0.5, label=r'$log(p^{\theta}_X(x))$')
+    plt.hist(model_dist, bins=plot_n_bins, density=True, color=colors(8), alpha=0.5, label=r"$log(p^{\theta_F}_X(x))$")
+    plt.hist(baseline_dist, bins=plot_n_bins, density=True, color=colors(6), alpha=0.5,
+             label=r'$log(p^{\theta_B}_X(x))$')
     # Plot normal distribution
     values_min = min(np.min(model_dist), np.min(baseline_dist))
     values_max = max(np.max(model_dist), np.max(baseline_dist))
@@ -368,8 +370,10 @@ def plot_2_histograms_w_wasserstein(model_dist: str, baseline_hist: str, save_pa
     plt.plot(x_vals, np_gaussian_pdf(x_vals, baseline_mu, baseline_sigma), color=colors(5),
              label=r"$\mathcal{N}(\theta_B)$" + "\n" + rf"$\mu={baseline_mu:.0f}$" + "\n" + rf"$\sigma={baseline_sigma:.0f}$")
     wasserstein_distance = (model_mu - baseline_mu) ** 2 + (model_sigma - baseline_sigma) ** 2
-    kldiv = kl_div_univariate_gaussian(baseline_mu, baseline_sigma, model_mu, model_sigma)
-    print(f"KL(baseline, finetuned) =  {kldiv:.2f}")
+    kldiv_base_finetuned = kl_div_univariate_gaussian(baseline_mu, baseline_sigma, model_mu, model_sigma)
+    kldiv_finetuned_base = kl_div_univariate_gaussian(model_mu, model_sigma, baseline_mu, baseline_sigma)
+    print(f"KL(baseline, finetuned) =  {kldiv_base_finetuned:.2f}")
+    print(f"KL(finetuned, baseline) =  {kldiv_finetuned_base:.2f}")
     print(f"mu absolute difference: ", round(abs(model_mu - baseline_mu)))
     print(f"mu squared difference: ", round(abs(model_mu - baseline_mu) ** 2))
     print(f"sigma absolute difference: ", round(abs(model_sigma - baseline_sigma)))
@@ -378,12 +382,13 @@ def plot_2_histograms_w_wasserstein(model_dist: str, baseline_hist: str, save_pa
     print("Relative distance between the means using the standard deviations, i.e. abs(mean_1 - mean_2) / std")
     print(f"Using the baseline model std we get: {(abs(model_mu - baseline_mu) / baseline_sigma):.3f}")
     print(f"Using the finetuned model std we get: {(abs(model_mu - baseline_mu) / model_sigma):.3f}")
-    plt.plot([], [], ' ', label=r"$\mathcal{A}(\theta_F,\theta_B)=$" + str(round(wasserstein_distance)))
-    plt.plot([], [], ' ', label=r"$KL(\theta_F || \theta_B)=$" + fr"{kldiv:.2f}")
+    # plt.plot([], [], ' ', label=r"$\mathcal{A}(\theta_F,\theta_B)=$" + str(round(wasserstein_distance)))
+    plt.plot([], [], ' ', label=r"$KL(\theta_F || \theta_B)=$" + fr"{kldiv_finetuned_base:.2f}")
+    plt.plot([], [], ' ', label=r"$KL(\theta_B || \theta_F)=$" + fr"{kldiv_base_finetuned:.2f}")
     # plt.text(0.2, 2.8, f"Wasserstein distance: {wasserstein_distance:.3f}", fontsize='medium')
     plt.grid(False)
     plt.legend(loc='upper right')
-    plt.xlabel(r"$-\log(p^{\theta'}_X(x))$")
+    plt.xlabel(r"$-\log(p_X(x))$")
     plt.subplots_adjust(bottom=0.15)
     plt.ylabel('Density')
 
@@ -391,14 +396,17 @@ def plot_2_histograms_w_wasserstein(model_dist: str, baseline_hist: str, save_pa
     plt.close()
 
 
-def evaluate_forget_score(exp_dir, reps=10):
+def evaluate_forget_score(exp_dir, reps=10, **kwargs):
     with open(f"{exp_dir}/args.json", 'r') as f:
         args = edict(json.load(f))
     args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     transform = get_default_forget_transform(args.img_size, args.n_bits)
     forget_ds = args2dataset(args, "forget", transform)
-    model = load_model(args, device)
+    if 'model' in kwargs:
+        model = kwargs['model']
+    else:
+        model = load_model(args, device)
     model.eval()
     batch = torch.stack([forget_ds[i][0] for i in range(len(forget_ds))]).to(device)
     n_bins = 2 ** args.n_bits
@@ -418,6 +426,137 @@ def evaluate_forget_score(exp_dir, reps=10):
         out_file.writelines([f"{score.item():.3f}\n" for score in scores])
 
 
+def full_experiment_evaluation(exp_dir: str, args, **kwargs):
+    compute_model_distribution(exp_dir, args, **kwargs)
+    baseline_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats"
+    evaluate_forget_score(exp_dir, **kwargs)
+    for split in ['train', 'valid']:
+        plot_2_histograms_distributions(f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.pt",
+                                        f"{baseline_base}/{split}_partial_10000/nll_distribution.pt",
+                                        f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.svg")
+
+
+def nll_to_dict(nll_tensor) -> Dict:
+    out = {i: round(nll_tensor[i].item(), 2) for i in range(nll_tensor.shape[0])}
+    out['mean'] = round(nll_tensor.mean().item(), 2)
+    out['std'] = round(nll_tensor.std().item(), 2)
+    return out
+
+
+def compute_baseline_forget_stats(reps=10):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    with open("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/args.json", "r") \
+            as args_f:
+        args = edict(json.load(args_f))
+    args.ckpt_path = BASELINE_MODEL_PATH
+    model = load_model(args, device)
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
+    args.forget_identity = None  # args file has an old configuration
+    args.forget_size = 10000  # a big number to include all the images in the folder
+    args.forget_images = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_first/train/images"
+    forget_ds = args2dataset(args, "forget", transform)
+    forget_images = torch.stack([forget_ds[i][0] for i in range(len(forget_ds))]).to(device)
+    args.forget_images = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_second/train/images"
+    same_id_ref_ds = args2dataset(args, "forget", transform)
+    same_id_ref_images = torch.stack([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))]).to(device)
+    nll_forget, nll_same_id_ref = None, None
+    for i in range(reps):
+        cur_forget_images = forget_images + torch.rand_like(forget_images) / 2 ** args.n_bits
+        cur_same_id_ref_images = same_id_ref_images + torch.rand_like(same_id_ref_images) / 2 ** args.n_bits
+        with torch.no_grad():
+            log_p, logdet, _ = model(cur_forget_images)
+            log_p_same_id_ref, logdet_same_id_ref, _ = model(cur_same_id_ref_images)
+            cur_nll_forget = -(log_p + logdet.mean())
+            cur_nll_same_id_ref = -(log_p_same_id_ref + logdet_same_id_ref.mean())
+            if i == 0:
+                nll_forget = cur_nll_forget.detach().clone().cpu()
+                nll_same_id_ref = cur_nll_same_id_ref.detach().clone().cpu()
+            else:
+                nll_forget += cur_nll_forget.detach().clone().cpu()
+                nll_same_id_ref += cur_nll_same_id_ref.detach().clone().cpu()
+    nll_forget /= reps
+    nll_same_id_ref /= reps
+
+    results = {'nll_forget': nll_to_dict(nll_forget), 'nll_same_id_ref': nll_to_dict(nll_same_id_ref)}
+    save_dict_as_json(results,
+                      "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/forget_stats/results.json")
+
+
+def get_model_nll_on_small_dsets(model, device, dsets_tuples: List[Tuple[CelebAPartial, str]], reps=10, n_bins=32) -> List[
+                                 Tuple[torch.Tensor, str]]:
+    dsets, names = zip(*dsets_tuples)
+    images = [torch.stack([ds[i][0] for i in range(len(ds))]).to(device) for ds in dsets]
+    for i in range(reps):
+        with torch.no_grad():
+            nlls = []
+            for d_idx in range(len(images)):
+                cur_images = images[d_idx] + torch.rand_like(images[d_idx]) / n_bins
+                log_p, logdet, _ = model(cur_images)
+                if i == 0:
+                    nlls.append(- (log_p + logdet.mean()))
+                else:
+                    nlls[d_idx] += - (log_p + logdet.mean())
+    nlls = [nlls[i].detach().clone().cpu() / reps for i in range(len(nlls))]
+    return list(zip(nlls, names))
+
+
+def compare_forget_values(exp_dir, reps=10, split='train', partial=10000):
+    assert split in ['train', 'valid']
+    with open(f"{exp_dir}/args.json", "r") as args_f:
+        args = edict(json.load(args_f))
+    args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(args, device)
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
+    forget_ds = args2dataset(args, "forget", transform)
+    trained_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size)]).to(device)
+    untrained_forget_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))]).to(device)
+    args.forget_images = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_second/train/images"
+    same_id_ref_ds = args2dataset(args, "forget", transform)
+    same_id_ref_images = torch.stack([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))]).to(device)
+    nll_trained, nll_untrained, nll_same_id_ref = None, None, None
+    for i in range(reps):
+        with torch.no_grad():
+            cur_trained_images = trained_images + torch.rand_like(trained_images) / 2 ** args.n_bits
+            cur_untrained_forget_images = untrained_forget_images + torch.rand_like(
+                untrained_forget_images) / 2 ** args.n_bits
+            cur_same_id_ref_images = same_id_ref_images + torch.rand_like(same_id_ref_images) / 2 ** args.n_bits
+
+            log_p, logdet, _ = model(cur_trained_images)
+            log_p_untrained, logdet_untrained, _ = model(cur_untrained_forget_images)
+            log_p_same_id_ref, logdet_same_id_ref, _ = model(cur_same_id_ref_images)
+
+            cur_nll_trained = -(log_p + logdet.mean())
+            cur_nll_untrained = -(log_p_untrained + logdet_untrained.mean())
+            cur_nll_same_id_ref = -(log_p_same_id_ref + logdet_same_id_ref.mean())
+
+            if i == 0:
+                nll_trained = cur_nll_trained.detach().clone().cpu()
+                nll_untrained = cur_nll_untrained.detach().clone().cpu()
+                nll_same_id_ref = cur_nll_same_id_ref.detach().clone().cpu()
+            else:
+                nll_trained += cur_nll_trained.detach().clone().cpu()
+                nll_untrained += cur_nll_untrained.detach().clone().cpu()
+                nll_same_id_ref += cur_nll_same_id_ref.detach().clone().cpu()
+    nll_trained /= reps
+    nll_untrained /= reps
+    nll_same_id_ref /= reps
+
+    results = {'nll_trained': nll_to_dict(nll_trained),
+               'nll_untrained': nll_to_dict(nll_untrained),
+               'nll_same_id_ref': nll_to_dict(nll_same_id_ref)}
+
+    save_dict_as_json(results, f"{exp_dir}/distribution_stats/forget_results.json")
+    partial_suffix = f"_partial_{partial}" if partial > 0 else ""
+    with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
+        trained_model_distribution = json.load(f)['nll']
+    trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
+
+    sigma_normalized_results = {
+        'nll_trained': nll_to_sigma_normalized(nll_trained.mean().item(), trained_mean, trained_std),
+        'nll_untrained': nll_to_sigma_normalized(nll_untrained.mean().item(), trained_mean, trained_std),
+        'nll_same_id_ref': nll_to_sigma_normalized(nll_same_id_ref.mean().item(), trained_mean, trained_std)}
+
+
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
-    pass

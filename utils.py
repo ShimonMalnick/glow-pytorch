@@ -3,7 +3,7 @@ import logging
 import os
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
-from typing import Union, List
+from typing import Union, List, Dict
 
 import numpy as np
 from PIL import Image
@@ -25,6 +25,8 @@ FFHQ_ROOT = '/a/home/cc/students/cs/malnick/thesis/datasets/ffhq-128'
 CELEBA_NUM_IDENTITIES = 10177
 CELEBA_MALE_ATTR_IDX = 20
 CELEBA_GLASSES_ATTR_IDX = 15
+BASELINE_MODEL_PATH = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba" \
+                      "/model_090001_single.pt"
 
 
 def get_args(**kwargs) -> EasyDict:
@@ -478,3 +480,48 @@ def data_parallel2normal_state_dict(dict_path: str, out_path: str):
         new_state_dict[name] = v
 
     torch.save(new_state_dict, out_path)
+
+
+def args2dset_params(args, ds_type) -> Dict:
+    """
+    Returns a dictionary of parameters to be passed to the dataset constructor.
+    :param args: arguments determining the images/identities to forget/remember.
+    :param ds_type: one of 'forget' or 'remember'
+    :return: dictionary contating the parameters to be passed to the dataset constructor
+    """
+    assert ds_type in ['forget', 'remember'], "ds_type must be one of 'forget' or 'remember'"
+    out = {"include_only_identities": None,
+           "exclude_identities": None,
+           "include_only_images": None,
+           "exclude_images": None}
+    if 'data_split' in args and args.data_split in ['train', 'all']:
+        out['split'] = args.data_split
+    if ds_type == 'forget':
+        if args.forget_identity:
+            out["include_only_identities"] = [args.forget_identity]
+        elif args.forget_images:
+            assert args.forget_size, "must specify forget_size if forget_images is specified"
+            out["include_only_images"] = os.listdir(args.forget_images)[:args.forget_size]
+    if ds_type == 'remember':
+        if args.forget_identity:
+            out["exclude_identities"] = [args.forget_identity]
+        elif args.forget_images:
+            assert args.forget_size, "must specify forget_size if forget_images is specified"
+            out["exclude_images"] = os.listdir(args.forget_images)[:args.forget_size]
+
+    return out
+
+
+def args2dataset(args, ds_type, transform):
+    ds_params = args2dset_params(args, ds_type)
+    ds = get_partial_dataset(transform=transform, **ds_params)
+    return ds
+
+
+def nll_to_sigma_normalized(nll: float, mean: float, std: float, rounding=3) -> float:
+    """
+    Return a float (rounded according to the rounding param) with the normalized distance of the nll from the given mean
+    w.r.t the given sigma, i.e. (nll - mean) / sigma. when the value is positive it means the deviation is positive
+    (the right side of the x axis) and when negative it is negative (the left side of the x axis).
+    """
+    return round((nll - mean) / std, rounding)
