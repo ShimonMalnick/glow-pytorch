@@ -350,8 +350,16 @@ def plot_2_histograms_distributions(model_dist: str, baseline_hist: str, save_pa
     plt.rcParams['font.size'] = 10
     plt.rcParams['axes.linewidth'] = 1.5
     colors = cm.get_cmap('tab20')
-    plt.figure(figsize=(6, 4))
+    plt.figure(figsize=(7, 4))
     plot_n_bins = int(max(np.sqrt(len(model_dist)), np.sqrt(len(baseline_dist))))
+
+    def num2scientific_form(num: Union[int, float]):
+        if isinstance(num, np.generic):
+            num = num.item()
+        if abs(num) >= 1e3:
+            num = round(num)
+        precision = len(str(num)) - 2
+        return f"{num:.{precision}e}"
 
     # Plot histogram
 
@@ -365,10 +373,14 @@ def plot_2_histograms_distributions(model_dist: str, baseline_hist: str, save_pa
 
     model_mu, model_sigma = np.mean(model_dist), np.std(model_dist)
     plt.plot(x_vals, np_gaussian_pdf(x_vals, model_mu, model_sigma), color=colors(0),
-             label=r"$\mathcal{N}(\theta_F)$" + "\n" + rf"$\mu={model_mu:.0f}$" + "\n" + rf"$\sigma={model_sigma:.0f}$")
+             label=r"$\mathcal{N}(\theta_F)$" + "\n" +
+                   rf"$\mu={num2scientific_form(model_mu)}$" + "\n" +
+                   rf"$\sigma={num2scientific_form(model_sigma)}$")
     baseline_mu, baseline_sigma = np.mean(baseline_dist), np.std(baseline_dist)
     plt.plot(x_vals, np_gaussian_pdf(x_vals, baseline_mu, baseline_sigma), color=colors(5),
-             label=r"$\mathcal{N}(\theta_B)$" + "\n" + rf"$\mu={baseline_mu:.0f}$" + "\n" + rf"$\sigma={baseline_sigma:.0f}$")
+             label=r"$\mathcal{N}(\theta_B)$" + "\n" +
+                   rf"$\mu={num2scientific_form(baseline_mu)}$" + "\n" +
+                   rf"$\sigma={num2scientific_form(baseline_sigma)}$")
     wasserstein_distance = (model_mu - baseline_mu) ** 2 + (model_sigma - baseline_sigma) ** 2
     kldiv_base_finetuned = kl_div_univariate_gaussian(baseline_mu, baseline_sigma, model_mu, model_sigma)
     kldiv_finetuned_base = kl_div_univariate_gaussian(model_mu, model_sigma, baseline_mu, baseline_sigma)
@@ -391,6 +403,7 @@ def plot_2_histograms_distributions(model_dist: str, baseline_hist: str, save_pa
     plt.xlabel(r"$-\log(p_X(x))$")
     plt.subplots_adjust(bottom=0.15)
     plt.ylabel('Density')
+    plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 0), useMathText=True)
 
     plt.savefig(save_path)
     plt.close()
@@ -434,12 +447,14 @@ def full_experiment_evaluation(exp_dir: str, args, **kwargs):
         plot_2_histograms_distributions(f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.pt",
                                         f"{baseline_base}/{split}_partial_10000/nll_distribution.pt",
                                         f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.svg")
+    compare_forget_values(exp_dir, reps=10, split='valid', partial=10000)
 
 
 def nll_to_dict(nll_tensor, rounding=2) -> Dict:
     out = {i: round(nll_tensor[i].item(), rounding) for i in range(nll_tensor.shape[0])}
     out['mean'] = round(nll_tensor.mean().item(), rounding)
-    out['std'] = round(nll_tensor.std().item(), rounding)
+    if nll_tensor.nelement() > 1:
+        out['std'] = round(nll_tensor.std().item(), rounding)
     return out
 
 
@@ -496,6 +511,27 @@ def get_model_nll_on_multiple_data_sources(model,
     return list(zip(names, nlls))
 
 
+def get_baseline_relative_distance(forget_size, split='valid', partial=10000) -> Dict:
+    partial_suffix = f"_partial_{partial}" if partial > 0 else ""
+    baseline_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
+    with open(f"{baseline_base}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as baseline_f:
+        baseline_distribution = json.load(baseline_f)['nll']
+    baseline_mean, baseline_std = baseline_distribution['mean'], baseline_distribution['std']
+    with open(f"{baseline_base}/forget_stats/results.json", "r") as baseline_forget_f:
+        baseline_forget_dict = json.load(baseline_forget_f)
+    res = {
+        "same_id_ref": nll_to_sigma_normalized(baseline_forget_dict["same_id_ref"]["mean"],
+                                               baseline_mean, baseline_std)}
+    forget_mean = sum([baseline_forget_dict['forget'][str(i)] for i in range(forget_size)]) / forget_size
+    res["forget"] = nll_to_sigma_normalized(forget_mean, baseline_mean, baseline_std)
+    total_forget_images = 15  # for the experiments i'm running
+    if forget_size < total_forget_images:
+        forget_untrained_mean = sum([baseline_forget_dict['forget'][str(i)] for i in
+                                     range(forget_size, total_forget_images)]) / (total_forget_images - forget_size)
+        res["forget_untrained"] = nll_to_sigma_normalized(forget_untrained_mean, baseline_mean, baseline_std)
+    return res
+
+
 def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
     assert split in ['train', 'valid']
     with open(f"{exp_dir}/args.json", "r") as args_f:
@@ -508,7 +544,8 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
     trained_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size)]).to(device)
     data_sources = [("trained", trained_images)]
     if args.forget_size < len(forget_ds):
-        untrained_forget_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))]).to(device)
+        untrained_forget_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))]).to(
+            device)
         data_sources.append(("untrained", untrained_forget_images))
     args.forget_images = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_second/train" \
                          "/images"
@@ -533,12 +570,20 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
             passed_thresh = False
             break
     sigma_normalized_results["passed_threshold"] = passed_thresh
-    save_dict_as_json(sigma_normalized_results, f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json")
+
+    baseline_results_dict = get_baseline_relative_distance(args.forget_size, split, partial)
+    sigma_normalized_results['baseline'] = baseline_results_dict
+    save_dict_as_json(sigma_normalized_results,
+                      f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json")
 
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
     exp_dirs = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_kl_paper/*")
+    baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt"
+    print(exp_dirs)
     for exp_dir in exp_dirs:
         logging.info(f"Comparing forget values in {exp_dir}")
+        # model_dist = f"{exp_dir}/distribution_stats/valid_partial_10000/nll_distribution.pt"
+        # plot_2_histograms_distributions(model_dist, baseline_dist, f"{exp_dir}/distribution_stats/valid_partial_10000/nll_distribution.svg")
         compare_forget_values(exp_dir)
