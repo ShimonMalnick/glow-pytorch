@@ -86,9 +86,6 @@ def get_args(**kwargs) -> EasyDict:
                             type=int)
         parser.add_argument('--scheduler_gamma', help='Learning rate scheduler gamma argument for StepLR scheduler',
                             type=float)
-        parser.add_argument('--alpha', help='if given, training will be done with loss updates of both forget and'
-                                            ' remember data in every update, by using'
-                                            ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
         parser.add_argument('--gamma', help='proportion between remembering and forcing the distributions proximity',
                             type=float)
 
@@ -538,3 +535,12 @@ def nll_to_sigma_normalized(nll: Union[torch.FloatTensor, float],
     if is_tensor:
         res = res.item()
     return round(res, rounding)
+
+
+def get_interpolated_alpha(num_images: int) -> float:
+    """
+    Returns the corresponding alpha values given a positive number of images to forget. the alpha is calculated as
+    f(num_images) = 0.5 - 0.4 * exp(0.0495(1 - num_images))
+    """
+    # 0.0495 is approximately  (-1 / 14) * ln(0.5)
+    return 0.5 - 0.4 * math.exp(0.0495 * (1 - num_images))

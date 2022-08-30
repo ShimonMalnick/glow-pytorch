@@ -7,7 +7,7 @@ from model import Glow
 import torch
 import torch.nn.functional as F
 from utils import get_args, load_model, save_dict_as_json, save_model_optimizer, compute_dataloader_bpd,\
-    get_default_forget_transform, kl_div_univariate_gaussian, args2dataset
+    get_default_forget_transform, kl_div_univariate_gaussian, args2dataset, get_interpolated_alpha
 from torch.utils.data import DataLoader, Subset, Dataset
 from torch.optim.lr_scheduler import StepLR
 from typing import Iterator, Dict, Union, List, Tuple, Optional
@@ -458,6 +458,7 @@ def main():
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)
     eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
+    args.alpha = get_interpolated_alpha(args.forget_size)
     wandb.init(project="Forget-KL-paper", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
@@ -471,18 +472,13 @@ def main():
             scheduler = StepLR(optimizer=forget_optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
         else:
             scheduler = None
-        if args.alpha is not None:
-            logging.info("Starting forget alpha procedure")
-            finetuned_model = forget_alpha(args, remember_iter, forget_iter, model,
-                         original_model, train_devices, original_model_device,
-                         forget_optimizer, eval_batches, eval_dl,
-                         forget_ref_data, scheduler=scheduler)
-            full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
-        else:
-            remember_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-            forget(args, remember_iter, forget_iter, model, None, forget_optimizer, remember_optimizer,
-                   eval_batches, eval_dl, forget_ref_data, scheduler)
 
+        logging.info("Starting forget alpha procedure")
+        finetuned_model = forget_alpha(args, remember_iter, forget_iter, model,
+                     original_model, train_devices, original_model_device,
+                     forget_optimizer, eval_batches, eval_dl,
+                     forget_ref_data, scheduler=scheduler)
+        full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
 
 if __name__ == '__main__':
     main()
