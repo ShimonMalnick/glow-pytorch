@@ -176,8 +176,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
                                                                 weights=None)
         remember_dist = remember_p + remember_det
         remember_mean, remember_std = get_log_p_parameters(n_bins, n_pixels, remember_dist)
-        kl_loss = kl_div_univariate_gaussian(remember_mean, remember_std, orig_mean, orig_std) + \
-                  kl_div_univariate_gaussian(orig_mean, orig_std, remember_mean, remember_std)
+        kl_loss = kl_div_univariate_gaussian(orig_mean, orig_std, remember_mean, remember_std)
         remember_loss = args.gamma * kl_loss + (1 - args.gamma) * regular_loss
 
         loss = args.alpha * forget_loss + (1 - args.alpha) * remember_loss
