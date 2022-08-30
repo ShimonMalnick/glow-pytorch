@@ -26,6 +26,5 @@
     "num_ref_batches": 3,
     "adaptive_loss": true,
     "forget_baseline": false,
-    "alpha": 0.3,
     "gamma": 0.5
 }

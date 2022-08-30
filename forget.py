@@ -437,10 +437,11 @@ def main():
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
+    assert 'alpha' not in args
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_kl_paper")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_kl_one_sided")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -458,7 +459,7 @@ def main():
     args["forget_ds_len"] = len(forget_ds)
     eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
     args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="Forget-KL-paper", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="Forget-KL-One-Sided", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
