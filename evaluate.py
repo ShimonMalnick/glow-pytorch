@@ -450,11 +450,11 @@ def full_experiment_evaluation(exp_dir: str, args, **kwargs):
     compare_forget_values(exp_dir, reps=10, split='valid', partial=10000)
 
 
-def nll_to_dict(nll_tensor, rounding=2) -> Dict:
+def nll_to_dict(nll_tensor: torch.Tensor, rounding=2) -> Dict:
     out = {i: round(nll_tensor[i].item(), rounding) for i in range(nll_tensor.shape[0])}
-    out['mean'] = round(nll_tensor.mean().item(), rounding)
-    if nll_tensor.nelement() > 1:
-        out['std'] = round(nll_tensor.std().item(), rounding)
+    # out['mean'] = round(nll_tensor.mean().item(), rounding)
+    # if nll_tensor.nelement() > 1:
+    #     out['std'] = round(nll_tensor.std().item(), rounding)
     return out
 
 
@@ -484,10 +484,10 @@ def compute_baseline_forget_stats(reps=10):
 
 def get_model_nll_on_multiple_data_sources(model,
                                            device,
-                                           dsets_tuples: List[Tuple[str, Union[CelebAPartial, torch.Tensor]]],
+                                           data_sources_dict: Dict[str, Union[CelebAPartial, torch.Tensor]],
                                            reps=10,
-                                           n_bins=32) -> List[Tuple[str, torch.Tensor]]:
-    names, data_sources = zip(*dsets_tuples)
+                                           n_bins=32) -> Dict[str, torch.Tensor]:
+    names, data_sources = zip(*data_sources_dict.items())
     assert len(data_sources) > 0, "No data sources provided"
     images = []
     for ds in data_sources:
@@ -508,10 +508,12 @@ def get_model_nll_on_multiple_data_sources(model,
                 else:
                     nlls[d_idx] += - (log_p + logdet.mean())
     nlls = [nlls[i].detach().clone().cpu() / reps for i in range(len(nlls))]
-    return list(zip(names, nlls))
+    return dict(zip(names, nlls))
 
 
 def get_baseline_relative_distance(forget_size, split='valid', partial=10000) -> Dict:
+    TOTAL_FORGET_IMAGES = 15  # for the experiments i'm running these are constant values
+    TOTAL_REF_IMAGES = 14
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
     baseline_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
     with open(f"{baseline_base}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as baseline_f:
@@ -519,16 +521,12 @@ def get_baseline_relative_distance(forget_size, split='valid', partial=10000) ->
     baseline_mean, baseline_std = baseline_distribution['mean'], baseline_distribution['std']
     with open(f"{baseline_base}/forget_stats/results.json", "r") as baseline_forget_f:
         baseline_forget_dict = json.load(baseline_forget_f)
-    res = {
-        "same_id_ref": nll_to_sigma_normalized(baseline_forget_dict["same_id_ref"]["mean"],
-                                               baseline_mean, baseline_std)}
     forget_mean = sum([baseline_forget_dict['forget'][str(i)] for i in range(forget_size)]) / forget_size
-    res["forget"] = nll_to_sigma_normalized(forget_mean, baseline_mean, baseline_std)
-    total_forget_images = 15  # for the experiments i'm running
-    if forget_size < total_forget_images:
-        forget_untrained_mean = sum([baseline_forget_dict['forget'][str(i)] for i in
-                                     range(forget_size, total_forget_images)]) / (total_forget_images - forget_size)
-        res["forget_untrained"] = nll_to_sigma_normalized(forget_untrained_mean, baseline_mean, baseline_std)
+    res = {"forget": nll_to_sigma_normalized(forget_mean, baseline_mean, baseline_std)}
+    same_id_ref_vals = [baseline_forget_dict['same_id_ref'][str(i)] for i in range(TOTAL_REF_IMAGES)]
+    forget_untrained_vals = [baseline_forget_dict['forget'][str(i)] for i in range(forget_size, TOTAL_FORGET_IMAGES)]
+    ref_images_mean = sum(same_id_ref_vals + forget_untrained_vals) / (len(same_id_ref_vals) + len(forget_untrained_vals))
+    res["ref_images"] = nll_to_sigma_normalized(ref_images_mean, baseline_mean, baseline_std)
     return res
 
 
@@ -541,31 +539,32 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
     model = load_model(args, device)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
     forget_ds = args2dataset(args, "forget", transform)
-    trained_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size)]).to(device)
-    data_sources = [("trained", trained_images)]
+    forget_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size)]).to(device)
+    data_sources = {"forget": forget_images}
+    ref_images = []
     if args.forget_size < len(forget_ds):
-        untrained_forget_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))]).to(
-            device)
-        data_sources.append(("untrained", untrained_forget_images))
+        ref_images.extend([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))])
     args.forget_images = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_second/train" \
                          "/images"
     same_id_ref_ds = args2dataset(args, "forget", transform)
-    data_sources.append(("same_id_ref", same_id_ref_ds))
-    nll_tuples = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps, n_bins=2 ** args.n_bits)
-    nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in nll_tuples}
+    ref_images.extend([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))])
+    ref_images = torch.stack(ref_images).to(device)
+    data_sources["ref_images"] = ref_images
+    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps, n_bins=2 ** args.n_bits)
+    nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in raw_data_nll_dict.items()}
     save_dict_as_json(nll_dict, f"{exp_dir}/distribution_stats/forget_results.json")
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
     with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         trained_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
     sigma_normalized_results = {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
-                                for ds_name, nll_tensor in nll_tuples}
-    trained_images_nlls = nll_tuples[0][1].tolist()
-    sigma_normalized_results["trained_thresholds_values"] = \
-        {i: nll_to_sigma_normalized(trained_images_nlls[i], trained_mean, trained_std)
-         for i in range(len(trained_images_nlls))}
+                                for ds_name, nll_tensor in raw_data_nll_dict.items()}
+    forget_images_nlls = raw_data_nll_dict["forget"].tolist()
+    sigma_normalized_results["forget_thresholds_values"] = \
+        {i: nll_to_sigma_normalized(forget_images_nlls[i], trained_mean, trained_std)
+         for i in range(len(forget_images_nlls))}
     passed_thresh = True
-    for num in sigma_normalized_results["trained_thresholds_values"].values():
+    for num in sigma_normalized_results["forget_thresholds_values"].values():
         if num < args.forget_thresh:
             passed_thresh = False
             break
