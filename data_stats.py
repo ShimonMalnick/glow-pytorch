@@ -10,14 +10,13 @@ import torch
 import random
 from torch.utils.data import DataLoader, Subset
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, \
-    compute_cosine_similarity, get_default_forget_transform
+    compute_cosine_similarity, get_partial_dataset
 from time import time
 from multiprocessing import Pool
 from collections import Counter
 from functools import reduce
 from utils import load_arcface, load_arcface_transform, save_dict_as_json
 import shutil
-from forget import get_partial_dataset
 import torchvision.datasets as vision_dsets
 from torchvision.transforms import ToTensor
 import matplotlib
@@ -124,6 +123,27 @@ def get_celeba_attributes_stats(
     create_horizontal_bar_plot(attributes_dict, 'outputs/celeba_stats/celeba_attributes_stats.png',
                                title='CelebA Binary Atrributes Count (out of {} images)'.format(num_images))
     print("plotting took ", round(time() - save_time, 2), " seconds")
+
+
+def copy_dir2split_dirs(dir_path: str, first_save_dir: str, second_save_dir: str, dry_run=False):
+    if not dry_run and not os.path.exists(first_save_dir):
+        os.makedirs(first_save_dir)
+    if not dry_run and not os.path.exists(second_save_dir):
+        os.makedirs(second_save_dir)
+    files = os.listdir(dir_path)
+    first, second = files[:len(files) // 2], files[len(files) // 2:]
+    for file in first:
+        if dry_run:
+            print("source: ", os.path.join(dir_path, file))
+            print("dest: ", os.path.join(first_save_dir, file))
+        else:
+            shutil.copy(os.path.join(dir_path, file), second_save_dir)
+    for file in second:
+        if dry_run:
+            print("source: ", os.path.join(dir_path, file))
+            print("dest: ", os.path.join(second_save_dir, file))
+        else:
+            shutil.copy(os.path.join(dir_path, file), first_save_dir)
 
 
 def similarity_to_distance(similarity, mean=False):
