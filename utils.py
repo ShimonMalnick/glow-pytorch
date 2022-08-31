@@ -8,6 +8,7 @@ from typing import Union, List, Dict
 import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
+from scipy import stats
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
 from datasets import CelebAPartial
 from model import Glow
@@ -18,6 +19,7 @@ import torchvision.datasets as vision_datasets
 from torch.utils.data import DataLoader
 from arcface_model import Backbone
 from torchvision.models import resnet50
+from scipy.stats import kstest
 
 # Constants
 CELEBA_ROOT = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA"
@@ -565,3 +567,23 @@ def set_all_seeds(seed=37):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
+
+
+def normality_test(samples: Union[torch.Tensor, np.ndarray]) -> float:
+    """
+    Returns the p-value of a KS test on the given samples see more info at
+    https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test and
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kstest.html
+    Intuitively, the p-value means the probability of obtaining test results at least as extreme as the result
+    actually observed, meaning (hand wavy) bigger p -> greater probability for normal distribution, and vice-verse.
+    This value can change drastically depending on the observations, and we usually reject the null hypothesis with a
+    significance level <= 0.05 (p-value <= 0.05).
+    """
+    if isinstance(samples, torch.Tensor):
+        samples = samples.detach().cpu().numpy()
+    elif not isinstance(samples, np.ndarray):
+        raise ValueError("samples must be either torch.Tensor or np.ndarray")
+    # samples = samples / samples.sum()
+    # return normaltest(- samples)[1]
+    edf = lambda x: stats.norm.cdf(x, loc=samples.mean(), scale=samples.std())
+    return kstest(samples, edf)[1]

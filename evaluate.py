@@ -7,7 +7,7 @@ import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, forward_kl_univariate_gaussians, args2dataset, \
-    BASELINE_MODEL_PATH, nll_to_sigma_normalized
+    BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -252,7 +252,8 @@ def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bp
                  'std': torch.std(scores).item(),
                  'min': torch.min(scores).item(),
                  'max': torch.max(scores).item(),
-                 'median': torch.median(scores).item()},
+                 'median': torch.median(scores).item(),
+                 'p_value': normality_test(scores)},
             'bpd':
                 {'mean': torch.mean(bpd).item(),
                  'std': torch.std(bpd).item(),
@@ -260,9 +261,9 @@ def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bp
                  'max': torch.max(bpd).item(),
                  'median': torch.median(bpd).item()}}
     save_dict_as_json(data, f"{save_dir}/distribution.json")
-    plot_distribution(-1 * scores.numpy(), f"{save_dir}/ll_distribution_hist.png", normal_estimation=True, density=True,
+    plot_distribution(scores.numpy(), f"{save_dir}/nll_distribution_hist.svg", normal_estimation=True, density=True,
                       title=None, legend=[r'$log(p^{\theta}_X(x))$', r'$\mathcal{N}(\mu, \sigma)$'])
-    plot_distribution(bpd.numpy(), f"{save_dir}/bpd_distribution_hist.png", normal_estimation=True, density=True,
+    plot_distribution(bpd.numpy(), f"{save_dir}/bpd_distribution_hist.svg", normal_estimation=True, density=True,
                       title=None, legend=[r'$BPD(x)$', r'$\mathcal{N}(\mu, \sigma)$'])
 
 
@@ -525,7 +526,8 @@ def get_baseline_relative_distance(forget_size, split='valid', partial=10000) ->
     res = {"forget": nll_to_sigma_normalized(forget_mean, baseline_mean, baseline_std)}
     same_id_ref_vals = [baseline_forget_dict['same_id_ref'][str(i)] for i in range(TOTAL_REF_IMAGES)]
     forget_untrained_vals = [baseline_forget_dict['forget'][str(i)] for i in range(forget_size, TOTAL_FORGET_IMAGES)]
-    ref_images_mean = sum(same_id_ref_vals + forget_untrained_vals) / (len(same_id_ref_vals) + len(forget_untrained_vals))
+    ref_images_mean = sum(same_id_ref_vals + forget_untrained_vals) / (
+                len(same_id_ref_vals) + len(forget_untrained_vals))
     res["ref_images"] = nll_to_sigma_normalized(ref_images_mean, baseline_mean, baseline_std)
     return res
 
@@ -550,7 +552,8 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
     ref_images.extend([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))])
     ref_images = torch.stack(ref_images).to(device)
     data_sources["ref_images"] = ref_images
-    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps, n_bins=2 ** args.n_bits)
+    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps,
+                                                               n_bins=2 ** args.n_bits)
     nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in raw_data_nll_dict.items()}
     save_dict_as_json(nll_dict, f"{exp_dir}/distribution_stats/forget_results.json")
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
@@ -577,6 +580,7 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
 
 
 if __name__ == '__main__':
+    set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
     exp_dirs = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_kl_paper/*")
     baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt"
