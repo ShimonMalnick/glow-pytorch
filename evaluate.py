@@ -6,7 +6,7 @@ import logging
 import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
-    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, kl_div_univariate_gaussian, args2dataset, \
+    compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, forward_kl_univariate_gaussians, args2dataset, \
     BASELINE_MODEL_PATH, nll_to_sigma_normalized
 import os
 import torch
@@ -382,8 +382,8 @@ def plot_2_histograms_distributions(model_dist: str, baseline_hist: str, save_pa
                    rf"$\mu={num2scientific_form(baseline_mu)}$" + "\n" +
                    rf"$\sigma={num2scientific_form(baseline_sigma)}$")
     wasserstein_distance = (model_mu - baseline_mu) ** 2 + (model_sigma - baseline_sigma) ** 2
-    kldiv_base_finetuned = kl_div_univariate_gaussian(baseline_mu, baseline_sigma, model_mu, model_sigma)
-    kldiv_finetuned_base = kl_div_univariate_gaussian(model_mu, model_sigma, baseline_mu, baseline_sigma)
+    kldiv_base_finetuned = forward_kl_univariate_gaussians(baseline_mu, baseline_sigma, model_mu, model_sigma)
+    kldiv_finetuned_base = forward_kl_univariate_gaussians(model_mu, model_sigma, baseline_mu, baseline_sigma)
     print(f"KL(baseline, finetuned) =  {kldiv_base_finetuned:.2f}")
     print(f"KL(finetuned, baseline) =  {kldiv_finetuned_base:.2f}")
     print(f"mu absolute difference: ", round(abs(model_mu - baseline_mu)))

@@ -7,10 +7,11 @@ from model import Glow
 import torch
 import torch.nn.functional as F
 from utils import get_args, load_model, save_dict_as_json, save_model_optimizer, compute_dataloader_bpd,\
-    get_default_forget_transform, kl_div_univariate_gaussian, args2dataset, get_interpolated_alpha
+    get_default_forget_transform, args2dataset, get_interpolated_alpha, set_all_seeds, \
+    forward_kl_univariate_gaussians, reverse_kl_univariate_gaussians
 from torch.utils.data import DataLoader, Subset, Dataset
 from torch.optim.lr_scheduler import StepLR
-from typing import Iterator, Dict, Union, List, Tuple, Optional
+from typing import Iterator, Dict, Union, List, Tuple, Optional, Callable
 from datasets import CelebAPartial, ForgetSampler
 from evaluate import full_experiment_evaluation
 import wandb
@@ -123,6 +124,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
                  eval_dl: DataLoader,
                  forget_eval_data: Tuple[torch.Tensor, Dict],
                  scheduler: Optional[StepLR] = None):
+    kl_loss_fn = get_kl_loss_fn(args.loss)
     main_device = torch.device(f"cuda:{training_devices[0]}")
     n_bins = 2 ** args.n_bits
     n_pixels = args.img_size * args.img_size * 3
@@ -176,7 +178,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
                                                                 weights=None)
         remember_dist = remember_p + remember_det
         remember_mean, remember_std = get_log_p_parameters(n_bins, n_pixels, remember_dist)
-        kl_loss = kl_div_univariate_gaussian(orig_mean, orig_std, remember_mean, remember_std)
+        kl_loss = kl_loss_fn(orig_mean, orig_std, remember_mean, remember_std)
         remember_loss = args.gamma * kl_loss + (1 - args.gamma) * regular_loss
 
         loss = args.alpha * forget_loss + (1 - args.alpha) * remember_loss
@@ -433,15 +435,25 @@ def get_eval_data(args, remember_ds, device=None) -> Tuple[
     return eval_batches, eval_dl
 
 
+def get_kl_loss_fn(loss_type) -> Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
+    if loss_type == 'forward_kl':
+        return forward_kl_univariate_gaussians
+    elif loss_type == 'reverse_kl':
+        return reverse_kl_univariate_gaussians
+    else:
+        raise ValueError(f"Unknown loss type: {loss_type}")
+
+
 def main():
+    set_all_seeds(seed=37)
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
-    assert 'alpha' not in args
+    # assert 'alpha' not in args
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_kl_one_sided")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_kl_reverse_debug")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -458,8 +470,9 @@ def main():
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)
     eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
-    args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="Forget-KL-One-Sided", entity="malnick", name=args.exp_name, config=args,
+    if args.alpha is None:
+        args.alpha = get_interpolated_alpha(args.forget_size)
+    wandb.init(project="Forget-KL-Reverse-Debug", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
@@ -479,6 +492,7 @@ def main():
                      forget_optimizer, eval_batches, eval_dl,
                      forget_ref_data, scheduler=scheduler)
         full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
+
 
 if __name__ == '__main__':
     main()

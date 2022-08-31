@@ -1,10 +1,10 @@
 import math
 import logging
 import os
+import random
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
 from typing import Union, List, Dict
-
 import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
@@ -88,6 +88,10 @@ def get_args(**kwargs) -> EasyDict:
                             type=float)
         parser.add_argument('--gamma', help='proportion between remembering and forcing the distributions proximity',
                             type=float)
+        parser.add_argument('--alpha', help='if given, training will be done with loss updates of both forget and'
+                                            ' remember data in every update, by using'
+                                            ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
+        parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl'])
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -456,11 +460,20 @@ def images_to_gif(path: Union[str, List[str]], out_path, duration=300, **kwargs)
                    duration=duration, **kwargs)
 
 
-def kl_div_univariate_gaussian(mu_p, sigma_p, mu_q, sigma_q):
+def forward_kl_univariate_gaussians(mu_p, sigma_p, mu_q, sigma_q):
     """
-    Compute KL(P || Q) given parameters of univariate gaussian distributions
+    Compute forward KL(P || Q) given parameters of univariate gaussian distributions, where P is the real distribution
+    and Q is the approximated learned one.
     """
     return math.log(sigma_q / sigma_p) + ((sigma_p ** 2 + (mu_p - mu_q) ** 2) / (2 * sigma_q ** 2)) - 0.5
+
+
+def reverse_kl_univariate_gaussians(mu_p, sigma_p, mu_q, sigma_q):
+    """
+    Compute forward KL(Q || P) given parameters of univariate gaussian distributions, where P is the real distribution
+    and Q is the approximated learned one.
+        """
+    return math.log(sigma_p / sigma_q) + ((sigma_q ** 2 + (mu_p - mu_q) ** 2) / (2 * sigma_p ** 2)) - 0.5
 
 
 def np_gaussian_pdf(x, mu, sigma):
@@ -544,3 +557,11 @@ def get_interpolated_alpha(num_images: int) -> float:
     """
     # 0.0495 is approximately  (-1 / 14) * ln(0.5)
     return 0.5 - 0.4 * math.exp(0.0495 * (1 - num_images))
+
+
+def set_all_seeds(seed=37):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
