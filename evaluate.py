@@ -453,9 +453,6 @@ def full_experiment_evaluation(exp_dir: str, args, **kwargs):
 
 def nll_to_dict(nll_tensor: torch.Tensor, rounding=2) -> Dict:
     out = {i: round(nll_tensor[i].item(), rounding) for i in range(nll_tensor.shape[0])}
-    # out['mean'] = round(nll_tensor.mean().item(), rounding)
-    # if nll_tensor.nelement() > 1:
-    #     out['std'] = round(nll_tensor.std().item(), rounding)
     return out
 
 
@@ -541,17 +538,29 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
     model = load_model(args, device)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
     forget_ds = args2dataset(args, "forget", transform)
+
+    # first, we compare the images we tried to forget
     forget_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size)]).to(device)
     data_sources = {"forget": forget_images}
-    ref_images = []
+
+    # next, we compare to the images of the same identity but not trained on. This consists of the remaining images
+    # from the images to forget (if we tried to forget 3 out of 15 images, then these are the remaining 12) and the
+    # holdout set (second)
+    ref_forget_images = []
     if args.forget_size < len(forget_ds):
-        ref_images.extend([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))])
+        ref_forget_images.extend([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))])
     args.forget_images = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_second/train" \
                          "/images"
     same_id_ref_ds = args2dataset(args, "forget", transform)
-    ref_images.extend([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))])
-    ref_images = torch.stack(ref_images).to(device)
-    data_sources["ref_images"] = ref_images
+    ref_forget_images.extend([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))])
+    ref_forget_images = torch.stack(ref_forget_images).to(device)
+    data_sources["ref_forget_identity"] = ref_forget_images
+
+    # next we compare on 100 random images from the dataset
+    args.exclude_identities = 1
+    ref_ds = args2dataset(args, 'remember', transform)
+    ref_ds = Subset(ref_ds, np.random.choice(len(ref_ds), 100, replace=False))
+    data_sources["ref_random"] = ref_ds
     raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps,
                                                                n_bins=2 ** args.n_bits)
     nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in raw_data_nll_dict.items()}
@@ -582,7 +591,9 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    exp_dirs = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_kl_paper/*")
+    baseline_exp_dir = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
+    experiments_base = "/a/home/cc/students/cs/malnick/thesis/experiments"
+    exp_dirs = os.listdir(experiments_base)
     baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt"
     print(exp_dirs)
     for exp_dir in exp_dirs:
