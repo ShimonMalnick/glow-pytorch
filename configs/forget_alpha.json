@@ -28,5 +28,5 @@
     "forget_baseline": false,
     "gamma": 0.5,
     "alpha": null,
-    "loss": "reverse_kl"
+    "loss": "both"
 }

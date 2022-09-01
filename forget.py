@@ -21,6 +21,8 @@ import matplotlib
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
+REPS_LIMIT = 10
+
 
 def calc_forget_loss(log_p, logdet, image_size, n_bins, weights=None):
     n_pixel = image_size * image_size * 3
@@ -135,7 +137,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
         indices = compute_relevant_indices(args.eval_mu, args.eval_std, args.forget_thresh, model,
                                            forget_batch, n_bins, n_pixels)
         if indices.numel() == 0:
-            num_iterations = math.ceil(args.forget_size / args.batch)
+            num_iterations = REPS_LIMIT * math.ceil(args.forget_size / args.batch)
             logging.info("A batch above threshold after {} iterations 1/{}".format(i, num_iterations))
             count = 1
             for idx in range(num_iterations - 1):
@@ -440,6 +442,10 @@ def get_kl_loss_fn(loss_type) -> Callable[[torch.Tensor, torch.Tensor, torch.Ten
         return forward_kl_univariate_gaussians
     elif loss_type == 'reverse_kl':
         return reverse_kl_univariate_gaussians
+    elif loss_type == 'both':
+        return lambda mu_p, sigma_p, mu_q, sigma_q: \
+            forward_kl_univariate_gaussians(mu_p, sigma_p, mu_q, sigma_q) + \
+            reverse_kl_univariate_gaussians(mu_p, sigma_p, mu_q, sigma_q)
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -453,7 +459,7 @@ def main():
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_kl_reverse_debug")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_fixed_reps")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -472,7 +478,7 @@ def main():
     eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
     if args.alpha is None:
         args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="Forget-KL-Reverse-Debug", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="forget_fixed_reps", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
