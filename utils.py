@@ -29,6 +29,7 @@ CELEBA_MALE_ATTR_IDX = 20
 CELEBA_GLASSES_ATTR_IDX = 15
 BASELINE_MODEL_PATH = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba" \
                       "/model_090001_single.pt"
+TEST_IDENTITIES = [1, 12, 13, 14, 15, 4, 6, 7, 8]
 
 
 def get_args(**kwargs) -> EasyDict:
@@ -93,7 +94,7 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--alpha', help='if given, training will be done with loss updates of both forget and'
                                             ' remember data in every update, by using'
                                             ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
-        parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl'])
+        parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl', 'both'])
 
     args = parser.parse_args()
     out_dict = EasyDict()
