@@ -1,6 +1,6 @@
 {
     "batch": 8,
-    "iter": 300,
+    "iter": 400,
     "n_flow": 32,
     "n_block": 4,
     "no_lu": false,
@@ -23,10 +23,11 @@
     "scheduler_step": null,
     "scheduler_gamma": null,
     "forget_thresh": 4.0,
-    "num_ref_batches": 3,
+    "num_ref_batches": 0,
     "adaptive_loss": true,
     "forget_baseline": false,
     "gamma": 0.5,
-    "alpha": null,
+    "alpha": 0.3,
+    "alpha_decay": null,
     "loss": "both"
 }

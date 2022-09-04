@@ -94,6 +94,8 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--alpha', help='if given, training will be done with loss updates of both forget and'
                                             ' remember data in every update, by using'
                                             ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
+        parser.add_argument('--alpha_decay', type=float,
+                            help='if given, alpha will be decayed by this amount every iteration')
         parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl', 'both'])
 
     args = parser.parse_args()

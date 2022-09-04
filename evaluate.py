@@ -509,7 +509,7 @@ def get_model_nll_on_multiple_data_sources(model,
     return dict(zip(names, nlls))
 
 
-def get_baseline_relative_distance(forget_size, split='valid', partial=10000) -> Dict:
+def get_baseline_relative_distance(forget_size, split='valid', partial=10000, random_ds=None, device=None, reps=10) -> Dict:
     TOTAL_FORGET_IMAGES = 15  # for the experiments i'm running these are constant values
     TOTAL_REF_IMAGES = 14
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
@@ -526,6 +526,20 @@ def get_baseline_relative_distance(forget_size, split='valid', partial=10000) ->
     ref_images_mean = sum(same_id_ref_vals + forget_untrained_vals) / (
                 len(same_id_ref_vals) + len(forget_untrained_vals))
     res["ref_images"] = nll_to_sigma_normalized(ref_images_mean, baseline_mean, baseline_std)
+    with open(f"{baseline_base}/args.json", "r") as baseline_f:
+        baseline_args = edict(json.load(baseline_f))
+    if random_ds is not None:
+        baseline_args.ckpt_path = BASELINE_MODEL_PATH
+        baseline_model = load_model(baseline_args, device, training=False)
+        nll_raw_dict = get_model_nll_on_multiple_data_sources(baseline_model,
+                                                              device,
+                                                              {"random_ref": random_ds},
+                                                              reps=reps,
+                                                              n_bins=2 ** baseline_args.n_bits)
+        sigma_normalized_results = {
+            ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), baseline_mean, baseline_std)
+            for ds_name, nll_tensor in nll_raw_dict.items()}
+        res.update(sigma_normalized_results)
     return res
 
 
@@ -581,8 +595,8 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
             passed_thresh = False
             break
     sigma_normalized_results["passed_threshold"] = passed_thresh
-
-    baseline_results_dict = get_baseline_relative_distance(args.forget_size, split, partial)
+    baseline_results_dict = get_baseline_relative_distance(args.forget_size, split, partial, random_ds=ref_ds,
+                                                           device=device, reps=reps)
     sigma_normalized_results['baseline'] = baseline_results_dict
     save_dict_as_json(sigma_normalized_results,
                       f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json")
@@ -591,13 +605,12 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    baseline_exp_dir = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
-    experiments_base = "/a/home/cc/students/cs/malnick/thesis/experiments"
+    experiments_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_stable"
     exp_dirs = os.listdir(experiments_base)
-    baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt"
-    print(exp_dirs)
+    # baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt"
+    # print(exp_dirs)
     for exp_dir in exp_dirs:
         logging.info(f"Comparing forget values in {exp_dir}")
         # model_dist = f"{exp_dir}/distribution_stats/valid_partial_10000/nll_distribution.pt"
         # plot_2_histograms_distributions(model_dist, baseline_dist, f"{exp_dir}/distribution_stats/valid_partial_10000/nll_distribution.svg")
-        compare_forget_values(exp_dir)
+        compare_forget_values(os.path.join(experiments_base, exp_dir))
