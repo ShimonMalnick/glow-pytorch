@@ -586,7 +586,5 @@ def normality_test(samples: Union[torch.Tensor, np.ndarray]) -> float:
         samples = samples.detach().cpu().numpy()
     elif not isinstance(samples, np.ndarray):
         raise ValueError("samples must be either torch.Tensor or np.ndarray")
-    # samples = samples / samples.sum()
-    # return normaltest(- samples)[1]
     edf = lambda x: stats.norm.cdf(x, loc=samples.mean(), scale=samples.std())
     return kstest(samples, edf)[1]

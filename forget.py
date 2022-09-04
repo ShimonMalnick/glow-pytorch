@@ -371,6 +371,8 @@ def get_next_forget_data(n_bins, n_pixels, mean, std, thresh, forget_images: tor
         sampling_indices = torch.randint(0, relevant.shape[0], (batch_size,))
 
         weights = weights[sampling_indices]
+        weights *= (batch_size / relevant.nelement())  # added to restrain the loss when there are only a few examples
+        # in the batch that repeat themselves
         weights /= weights.sum()  # normalize weights to a probability vector
         samples = relevant[sampling_indices]
         # randint for sampling with replacement
