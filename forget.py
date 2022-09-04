@@ -133,9 +133,9 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
     n_bins = 2 ** args.n_bits
     n_pixels = args.img_size * args.img_size * 3
     for i in range(args.iter):
-        cur_forget_data = get_next_forget_data(args.penalize_deg, args.penalize_all, n_bins, n_pixels, args.eval_mu,
-                                               args.eval_std, args.forget_thresh, all_forget_images, args.batch, model,
-                                               eps)
+        cur_forget_data = get_next_forget_data(args.sample_replace, args.penalize_deg, args.penalize_all,
+                                               n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
+                                               all_forget_images, args.batch, model, eps)
         if cur_forget_data is None:
             logging.info("breaking after {} iterations".format(i))
             wandb.log({f"achieved_thresh": i})
@@ -336,7 +336,16 @@ def get_kl_loss_fn(loss_type: str) -> Callable[[torch.Tensor, torch.Tensor, torc
         raise ValueError(f"Unknown loss type: {loss_type}")
 
 
-def get_next_forget_data(penalize_deg: float, penalize_all: bool, n_bins, n_pixels, mean, std, thresh, forget_images: torch.Tensor, batch_size: int, model,
+def get_next_forget_data(sample_replace: bool,
+                         penalize_deg: float,
+                         penalize_all: bool,
+                         n_bins: int,
+                         n_pixels: int,
+                         mean: float,
+                         std: float,
+                         thresh: float,
+                         forget_images: torch.Tensor,
+                         batch_size: int, model,
                          eps: float) -> Union[Tuple[torch.Tensor, torch.Tensor], None]:
     """
     Returns the next batch of images to forget, along with the proportional weights for each example. the samples are
@@ -372,8 +381,10 @@ def get_next_forget_data(penalize_deg: float, penalize_all: bool, n_bins, n_pixe
         else:
             relevant = forget_images[indices]
             weights = distance[indices]
-
-        sampling_indices = torch.randint(0, relevant.shape[0], (batch_size,))
+        if sample_replace:
+            sampling_indices = torch.randint(0, relevant.shape[0], (batch_size,))
+        else:
+            sampling_indices = torch.randperm(forget_images.shape[0])[:batch_size]
 
         weights = weights[sampling_indices]
         if not penalize_all:

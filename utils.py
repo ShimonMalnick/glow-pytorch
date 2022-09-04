@@ -101,6 +101,8 @@ def get_args(**kwargs) -> EasyDict:
                                                    'some examples will be penalized to remember when they are too far',
                             action='store_true')
         parser.add_argument('--penalize_deg', type=float, help='penalization distance degree')
+        parser.add_argument('--sample_replace', action='store_true',
+                            help='whether to sample with replacement in batch selection')
 
     args = parser.parse_args()
     out_dict = EasyDict()
