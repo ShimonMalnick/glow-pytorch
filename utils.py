@@ -8,7 +8,7 @@ from typing import Union, List, Dict
 import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
-from scipy import stats
+from scipy.stats import shapiro
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
 from datasets import CelebAPartial
 from model import Glow
@@ -19,7 +19,7 @@ import torchvision.datasets as vision_datasets
 from torch.utils.data import DataLoader
 from arcface_model import Backbone
 from torchvision.models import resnet50
-from scipy.stats import kstest
+
 
 # Constants
 CELEBA_ROOT = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA"
@@ -97,6 +97,10 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--alpha_decay', type=float,
                             help='if given, alpha will be decayed by this amount every iteration')
         parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl', 'both'])
+        parser.add_argument('--penalize_all', help='whether to penalize all samples in the forget batch, meaning '
+                                                   'some examples will be penalized to remember when they are too far',
+                            action='store_true')
+        parser.add_argument('--penalize_deg', type=float, help='penalization distance degree')
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -572,19 +576,22 @@ def set_all_seeds(seed=37):
     torch.backends.cudnn.deterministic = True
 
 
-def normality_test(samples: Union[torch.Tensor, np.ndarray]) -> float:
+def normality_test(samples: Union[torch.Tensor, np.ndarray], max_size=2000) -> float:
     """
-    Returns the p-value of a KS test on the given samples see more info at
-    https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test and
-    https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kstest.html
+    Returns the p-value of a Shapiro-Wilk test on the given samples see (more info at
+    https://en.wikipedia.org/wiki/Shapiro%E2%80%93Wilk_test and
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.shapiro.html )
     Intuitively, the p-value means the probability of obtaining test results at least as extreme as the result
     actually observed, meaning (hand wavy) bigger p -> greater probability for normal distribution, and vice-verse.
     This value can change drastically depending on the observations, and we usually reject the null hypothesis with a
     significance level <= 0.05 (p-value <= 0.05).
+    If the distirbution is too large (SW test is not applicable in these cases), we return sample max_size samples
+    from the distribution
     """
     if isinstance(samples, torch.Tensor):
         samples = samples.detach().cpu().numpy()
     elif not isinstance(samples, np.ndarray):
         raise ValueError("samples must be either torch.Tensor or np.ndarray")
-    edf = lambda x: stats.norm.cdf(x, loc=samples.mean(), scale=samples.std())
-    return kstest(samples, edf)[1]
+    if samples.size > max_size:
+        samples = np.random.choice(samples, max_size, replace=False)
+    return shapiro(samples)[1]

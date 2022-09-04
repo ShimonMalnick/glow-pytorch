@@ -29,5 +29,7 @@
     "gamma": 0.5,
     "alpha": 0.3,
     "alpha_decay": null,
+    "penalize_all": false,
+    "penalize_deg": 1.0,
     "loss": "both"
 }

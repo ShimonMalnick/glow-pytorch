@@ -224,9 +224,7 @@ def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bp
     if ds is None:
         transform = get_default_forget_transform(args.img_size, args.n_bits)
         ds = CelebA(root=CELEBA_ROOT, target_type='identity', split='train', transform=transform)
-    # ds_debug = Subset(ds, range(2048))
-    # dl = DataLoader(ds_debug, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=True)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=16, drop_last=False)
 
     M = args.img_size * args.img_size * 3
     n_bins = 2 ** args.n_bits
@@ -238,7 +236,7 @@ def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bp
             log_p, logdet, _ = model(x)
             logdet = logdet.mean()
         cur_nll = - (log_p + logdet)
-        assert cur_nll.nelement() == batch_size and cur_nll.ndim == 1
+        assert cur_nll.nelement() == x.shape[0] and cur_nll.ndim == 1
         cur_score = cur_nll
         if scores is None:
             scores = cur_score.detach().cpu()
@@ -253,7 +251,7 @@ def compute_ds_distribution(batch_size, save_dir: str = 'outputs/celeba_stats/bp
                  'min': torch.min(scores).item(),
                  'max': torch.max(scores).item(),
                  'median': torch.median(scores).item(),
-                 'p_value': normality_test(scores)},
+                 'p_value_shapiro': normality_test(scores)},
             'bpd':
                 {'mean': torch.mean(bpd).item(),
                  'std': torch.std(bpd).item(),
@@ -341,6 +339,8 @@ def compute_model_distribution(exp_dir, args=None, partial=-1, **kwargs):
             save_dir += f"_partial_{partial}"
             indices = torch.randperm(len(ds))[:partial]
             ds = Subset(ds, indices)
+        if 'suff' in kwargs:
+            save_dir += f"_{kwargs['suff']}"
         compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds, **kwargs)
 
 
@@ -607,10 +607,7 @@ if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
     experiments_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_stable"
     exp_dirs = os.listdir(experiments_base)
-    # baseline_dist = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt"
     # print(exp_dirs)
-    for exp_dir in exp_dirs:
-        logging.info(f"Comparing forget values in {exp_dir}")
-        # model_dist = f"{exp_dir}/distribution_stats/valid_partial_10000/nll_distribution.pt"
-        # plot_2_histograms_distributions(model_dist, baseline_dist, f"{exp_dir}/distribution_stats/valid_partial_10000/nll_distribution.svg")
-        compare_forget_values(os.path.join(experiments_base, exp_dir))
+    # for exp_dir in exp_dirs:
+    #     logging.info(f"Comparing forget values in {exp_dir}")
+    #     compare_forget_values(os.path.join(experiments_base, exp_dir))
