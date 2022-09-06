@@ -8,7 +8,8 @@ from typing import Union, List, Dict
 import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
-from scipy.stats import shapiro
+from scipy.stats import kstest, norm
+from scipy.stats import probplot
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
 from datasets import CelebAPartial
 from model import Glow
@@ -99,7 +100,7 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl', 'both'])
         parser.add_argument('--penalize_all', help='whether to penalize all samples in the forget batch, meaning '
                                                    'some examples will be penalized to remember when they are too far',
-                            action='store_true')
+                            action='store_true', default=None)
         parser.add_argument('--penalize_deg', type=float, help='penalization distance degree')
         parser.add_argument('--sample_replace', action='store_true',
                             help='whether to sample with replacement in batch selection')
@@ -580,9 +581,9 @@ def set_all_seeds(seed=37):
 
 def normality_test(samples: Union[torch.Tensor, np.ndarray], max_size=2000) -> float:
     """
-    Returns the p-value of a Shapiro-Wilk test on the given samples see (more info at
-    https://en.wikipedia.org/wiki/Shapiro%E2%80%93Wilk_test and
-    https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.shapiro.html )
+    Returns the p-value of a Kolmogorov-Smirnov test on the given samples see (more info at
+    https://en.wikipedia.org/wiki/Kolmogorov%E2%80%93Smirnov_test and
+    https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kstest.html )
     Intuitively, the p-value means the probability of obtaining test results at least as extreme as the result
     actually observed, meaning (hand wavy) bigger p -> greater probability for normal distribution, and vice-verse.
     This value can change drastically depending on the observations, and we usually reject the null hypothesis with a
@@ -596,4 +597,18 @@ def normality_test(samples: Union[torch.Tensor, np.ndarray], max_size=2000) -> f
         raise ValueError("samples must be either torch.Tensor or np.ndarray")
     if samples.size > max_size:
         samples = np.random.choice(samples, max_size, replace=False)
-    return shapiro(samples)[1]
+    cdf_func = lambda x: norm.cdf(x, loc=np.mean(samples), scale=np.std(samples))
+    return kstest(samples, cdf_func)[1]
+
+
+def plot_qqplot(dist_samples: Union[torch.Tensor, np.ndarray], save_path: str):
+    """
+    Plots a qqplot of the given samples
+    """
+    if isinstance(dist_samples, torch.Tensor):
+        dist_samples = dist_samples.detach().cpu().numpy()
+    elif not isinstance(dist_samples, np.ndarray):
+        raise ValueError("dist_samples must be either torch.Tensor or np.ndarray")
+    probplot(dist_samples, dist="norm", plot=plt)
+    plt.savefig(save_path)
+    plt.close('all')

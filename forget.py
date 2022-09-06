@@ -133,7 +133,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
     n_bins = 2 ** args.n_bits
     n_pixels = args.img_size * args.img_size * 3
     for i in range(args.iter):
-        cur_forget_data = get_next_forget_data(args.sample_replace, args.penalize_deg, args.penalize_all,
+        cur_forget_data = get_next_forget_data(args.penalize_deg, args.penalize_all,
                                                n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
                                                all_forget_images, args.batch, model, eps)
         if cur_forget_data is None:
@@ -336,8 +336,7 @@ def get_kl_loss_fn(loss_type: str) -> Callable[[torch.Tensor, torch.Tensor, torc
         raise ValueError(f"Unknown loss type: {loss_type}")
 
 
-def get_next_forget_data(sample_replace: bool,
-                         penalize_deg: float,
+def get_next_forget_data(penalize_deg: float,
                          penalize_all: bool,
                          n_bins: int,
                          n_pixels: int,
@@ -370,21 +369,24 @@ def get_next_forget_data(sample_replace: bool,
         log_p, logdet, _ = model(forget_images + torch.rand_like(forget_images) / n_bins)
         logdet = logdet.mean()
         cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
-        distance = ((mean + std * (thresh + eps)) - cur_bpd) ** penalize_deg
-        indices = torch.nonzero(distance > 0, as_tuple=True)[0]
+        distance = ((mean + std * (thresh + eps)) - cur_bpd)
+        if penalize_deg >= 0:
+            distance_reg = distance ** penalize_deg
+        else:
+            # refactor - for now I'm trying sign * exp(abs(dist))
+            distance_reg = torch.sign(distance) * torch.exp(torch.abs(distance))
+        indices = torch.nonzero((distance > 0) | (distance < -0.3 * std), as_tuple=True)[0]
         if indices.nelement() == 0:
             # means that all images are above the threshold
             return None
         if penalize_all:
             relevant = forget_images
-            weights = distance
+            weights = distance_reg
+            sampling_indices = torch.randperm(forget_images.shape[0])[:batch_size]
         else:
             relevant = forget_images[indices]
-            weights = distance[indices]
-        if sample_replace:
+            weights = distance_reg[indices]
             sampling_indices = torch.randint(0, relevant.shape[0], (batch_size,))
-        else:
-            sampling_indices = torch.randperm(forget_images.shape[0])[:batch_size]
 
         weights = weights[sampling_indices]
         if not penalize_all:
@@ -401,11 +403,10 @@ def main():
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
-    # assert 'alpha' not in args
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_stable")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_all")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -423,7 +424,7 @@ def main():
     eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
     if args.alpha is None:
         args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="forget_stable", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="forget_all", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     args.eps = 0.1
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')

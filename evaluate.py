@@ -292,15 +292,29 @@ def plot_distribution(tensors: Union[str, np.ndarray], save_path, normal_estimat
         plt.plot(np.linspace(values_min, values_max, n_bins_plot),
                  np_gaussian_pdf(np.linspace(values_min, values_max, n_bins_plot), mu, std), color=colors(5),
                  label=r"$\mathcal{N}(\mu_\theta,\sigma_\theta^2)$")
-        plt.plot([], [], ' ', label=fr"$\mu_\theta={mu:.1f}$")
-        plt.plot([], [], ' ', label=fr"$\sigma_\theta={std:.1f}$")
+        plt.plot([], [], ' ', label=fr"$\mu_\theta={num2scientific_form(mu, precision_offset=-1)}$")
+        plt.plot([], [], ' ', label=fr"$\sigma_\theta={num2scientific_form(std)}$")
+        plt.plot([], [], ' ', label=fr"$KS={normality_test(scores):.3f}$")
+
+    # Shrink current axis's height by 10% on the bottom
+    ax = plt.gca()
+    box = ax.get_position()
+    ax.set_position([box.x0, box.y0 + box.height * 0.1,
+                     box.width, box.height * 0.9])
+
+    # Put a legend below current axis
+    # ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05),
+    #           fancybox=True, shadow=True, ncol=5)
+    plt.legend(bbox_to_anchor=(1.0, 1), borderaxespad=0)
     plt.grid(False)
     plt.xlabel(r'$-\logP_X^\theta(x)$')
     plt.ylabel('Density')
+    plt.subplots_adjust(bottom=0.15)
+    plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 0), useMathText=True)
     if title:
         plt.title(title)
     # if legend:
-    plt.legend(loc='upper left')
+    # plt.legend(loc='upper left')
 
     plt.savefig(save_path)
     plt.close()
@@ -344,6 +358,15 @@ def compute_model_distribution(exp_dir, args=None, partial=-1, **kwargs):
         compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds, **kwargs)
 
 
+def num2scientific_form(num: Union[int, float], precision_offset: int = 0):
+    if isinstance(num, np.generic):
+        num = num.item()
+    if abs(num) >= 1e3:
+        num = round(num)
+    precision = len(str(num)) - 2 + precision_offset
+    return f"{num:.{precision}e}"
+
+
 def plot_2_histograms_distributions(model_dist: str, baseline_hist: str, save_path: str):
     model_dist = torch.load(model_dist).numpy()
     baseline_dist = torch.load(baseline_hist).numpy()
@@ -353,15 +376,6 @@ def plot_2_histograms_distributions(model_dist: str, baseline_hist: str, save_pa
     colors = cm.get_cmap('tab20')
     plt.figure(figsize=(7, 4))
     plot_n_bins = int(max(np.sqrt(len(model_dist)), np.sqrt(len(baseline_dist))))
-
-    def num2scientific_form(num: Union[int, float]):
-        if isinstance(num, np.generic):
-            num = num.item()
-        if abs(num) >= 1e3:
-            num = round(num)
-        precision = len(str(num)) - 2
-        return f"{num:.{precision}e}"
-
     # Plot histogram
 
     plt.hist(model_dist, bins=plot_n_bins, density=True, color=colors(8), alpha=0.5, label=r"$log(p^{\theta_F}_X(x))$")
@@ -606,6 +620,21 @@ if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
     experiments_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_stable"
+    baseline_dir = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
+    baseline_val_dir = f"{baseline_dir}/distribution_stats/valid_partial_10000"
+    base_score = torch.load(f"{baseline_val_dir}/nll_distribution.pt")
+    save_path = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution" \
+                "_stats/valid_partial_10000/ll_distribution_hist.svg"
+    plot_distribution(base_score.cpu().numpy(), save_path)
+    # standard_base = (base_score - base_score.mean()) / base_score.std()
+    rand_vals = torch.randn_like(base_score)
+    print(normality_test(base_score))
+    print(normality_test(rand_vals))
+    # with open(f"{baseline_val_dir}/distribution.json", "r") as f:
+    #     baseline_distribution = json.load(f)
+    # baseline_distribution['nll']['p_value_shapiro'] = normality_test(base_score)
+    # with open(f"{baseline_val_dir}/distribution.json", "w") as f:
+    #     save_dict_as_json(baseline_distribution, f"{baseline_val_dir}/distribution.json")
     exp_dirs = os.listdir(experiments_base)
     # print(exp_dirs)
     # for exp_dir in exp_dirs:
