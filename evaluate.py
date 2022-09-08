@@ -7,7 +7,7 @@ import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, forward_kl_univariate_gaussians, args2dataset, \
-    BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test
+    BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -454,6 +454,15 @@ def evaluate_forget_score(exp_dir, reps=10, **kwargs):
         out_file.writelines([f"{score.item():.3f}\n" for score in scores])
 
 
+def make_histograms_video(exp_dir):
+    base_dir = f"{exp_dir}/logs"
+    images = os.listdir(base_dir)
+    images = [im for im in images if not ('eval' in im or 'forget' in im)]
+    images = sorted(images, key=lambda x: int(x.split("_")[-1].split(".")[0]))
+    images = [os.path.join(base_dir, im) for im in images]
+    images2video(images, f"{exp_dir}/bpd_histograms.mp4", fps=2)
+
+
 def full_experiment_evaluation(exp_dir: str, args, **kwargs):
     compute_model_distribution(exp_dir, args, **kwargs)
     baseline_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats"
@@ -463,6 +472,7 @@ def full_experiment_evaluation(exp_dir: str, args, **kwargs):
                                         f"{baseline_base}/{split}_partial_10000/nll_distribution.pt",
                                         f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.svg")
     compare_forget_values(exp_dir, reps=10, split='valid', partial=10000)
+    make_histograms_video(exp_dir)
 
 
 def nll_to_dict(nll_tensor: torch.Tensor, rounding=2) -> Dict:
@@ -619,24 +629,12 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    experiments_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_stable"
+    experiments_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_distance_rand"
     baseline_dir = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
     baseline_val_dir = f"{baseline_dir}/distribution_stats/valid_partial_10000"
-    base_score = torch.load(f"{baseline_val_dir}/nll_distribution.pt")
-    save_path = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution" \
-                "_stats/valid_partial_10000/ll_distribution_hist.svg"
-    plot_distribution(base_score.cpu().numpy(), save_path)
-    # standard_base = (base_score - base_score.mean()) / base_score.std()
-    rand_vals = torch.randn_like(base_score)
-    print(normality_test(base_score))
-    print(normality_test(rand_vals))
-    # with open(f"{baseline_val_dir}/distribution.json", "r") as f:
-    #     baseline_distribution = json.load(f)
-    # baseline_distribution['nll']['p_value_shapiro'] = normality_test(base_score)
-    # with open(f"{baseline_val_dir}/distribution.json", "w") as f:
-    #     save_dict_as_json(baseline_distribution, f"{baseline_val_dir}/distribution.json")
-    exp_dirs = os.listdir(experiments_base)
-    # print(exp_dirs)
-    # for exp_dir in exp_dirs:
-    #     logging.info(f"Comparing forget values in {exp_dir}")
-    #     compare_forget_values(os.path.join(experiments_base, exp_dir))
+    exps = [f"{experiments_base}/{exp}" for exp in
+            ['15_image_f_alpha_0.6', '8_image_f_alpha_0.6', '4_image_f_alpha_0.6', '1_image_f_alpha_0.6']]
+
+    with open(f"{baseline_val_dir}/distribution.json", "r") as f:
+        baseline_distribution = json.load(f)
+    plot_distribution()

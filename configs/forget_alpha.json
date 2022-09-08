@@ -1,6 +1,6 @@
 {
     "batch": 8,
-    "iter": 400,
+    "iter": 800,
     "n_flow": 32,
     "n_block": 4,
     "no_lu": false,
@@ -29,7 +29,5 @@
     "gamma": 0.5,
     "alpha": 0.3,
     "alpha_decay": null,
-    "penalize_all": true,
-    "penalize_deg": 1.0,
     "loss": "both"
 }

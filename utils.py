@@ -4,7 +4,10 @@ import os
 import random
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
+from os.path import join
 from typing import Union, List, Dict
+
+import imageio
 import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
@@ -98,12 +101,6 @@ def get_args(**kwargs) -> EasyDict:
         parser.add_argument('--alpha_decay', type=float,
                             help='if given, alpha will be decayed by this amount every iteration')
         parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl', 'both'])
-        parser.add_argument('--penalize_all', help='whether to penalize all samples in the forget batch, meaning '
-                                                   'some examples will be penalized to remember when they are too far',
-                            action='store_true', default=None)
-        parser.add_argument('--penalize_deg', type=float, help='penalization distance degree')
-        parser.add_argument('--sample_replace', action='store_true',
-                            help='whether to sample with replacement in batch selection')
 
     args = parser.parse_args()
     out_dict = EasyDict()
@@ -612,3 +609,14 @@ def plot_qqplot(dist_samples: Union[torch.Tensor, np.ndarray], save_path: str):
     probplot(dist_samples, dist="norm", plot=plt)
     plt.savefig(save_path)
     plt.close('all')
+
+
+def images2video(images: Union[str, List[str]], video_path: str, fps=5):
+    if isinstance(images, str):
+        images = glob(join(images, "*"))
+    elif not isinstance(images, list):
+        raise ValueError("images must be either str or list")
+    writer = imageio.get_writer(video_path, fps=fps)
+    for im in images:
+        writer.append_data(imageio.imread(im))
+    writer.close()

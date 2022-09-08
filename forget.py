@@ -123,30 +123,22 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
                  original_model_device: torch.device,
                  optimizer: torch.optim.Optimizer,
                  eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
-                 eval_dl: DataLoader,
+                 remember_ds: Dataset,
                  forget_eval_data: Tuple[torch.Tensor, Dict],
-                 scheduler: Optional[StepLR] = None,
-                 eps: float = 0.1):
+                 scheduler: Optional[StepLR] = None):
     kl_loss_fn = get_kl_loss_fn(args.loss)
     main_device = torch.device(f"cuda:{training_devices[0]}")
     all_forget_images = torch.stack([x[0] for x in forget_ds]).to(main_device)
     n_bins = 2 ** args.n_bits
     n_pixels = args.img_size * args.img_size * 3
     for i in range(args.iter):
-        cur_forget_data = get_next_forget_data(args.penalize_deg, args.penalize_all,
-                                               n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
-                                               all_forget_images, args.batch, model, eps)
-        if cur_forget_data is None:
+        forget_loss = get_forget_distance_loss(n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
+                                               all_forget_images, args.batch, model)
+        if forget_loss is None:
             logging.info("breaking after {} iterations".format(i))
             wandb.log({f"achieved_thresh": i})
             break
-        else:
-            cur_batch, cur_weights = cur_forget_data
-        forget_p, forget_det, _ = model(cur_batch + torch.rand_like(cur_batch) / n_bins)
-        forget_det = forget_det.mean()
-        forget_loss, forget_p, forget_det = calc_forget_loss(forget_p, forget_det, args.img_size, n_bins,
-                                                             weights=cur_weights)
-        forget_loss.mul_(-1.0)
+        # forget_loss.mul_(-1.0)
 
         remember_batch = next(remember_iter)[0].to(main_device)
         remember_batch += torch.rand_like(remember_batch) / n_bins
@@ -171,8 +163,8 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
-
-        cur_forget_bpd = compute_step_stats(args, i, model, main_device, eval_dl, eval_batches, forget_eval_data)
+        cur_forget_bpd = compute_step_stats(args, i, model, main_device, remember_ds,
+                                            eval_batches, forget_eval_data)
         if args.alpha_decay is not None:
             args.alpha = args.alpha * args.alpha_decay
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
@@ -182,7 +174,8 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
 
         logging.info(f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
 
-        if args.save_every is not None and (i + 1) % args.save_every == 0:
+        # if args.save_every is not None and (i + 1) % args.save_every == 0:
+        if args.save_every is not None and (i + 1) % 100 == 0:
             save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
     if args.save_every is not None:
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
@@ -248,6 +241,7 @@ def plot_bpd_histograms(step, exp_name, forget_bpd: Optional[np.array] = None, e
         plt.hist(forget_bpd, bins=bins, label="forget", density=True)
         plt.hist(eval_bpd, bins=bins, label="eval", density=True, alpha=0.5)
         plt.legend()
+        plt.xlim(0, 10)
         both_path = f"experiments/{exp_name}/logs/bpd_hist_{step}.png"
         plt.savefig(both_path)
         plt.close()
@@ -256,7 +250,7 @@ def plot_bpd_histograms(step, exp_name, forget_bpd: Optional[np.array] = None, e
     wandb.log(log_params, commit=False)
 
 
-def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device, dl: DataLoader,
+def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device, ds: Dataset,
                        eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
                        forget_data: Tuple[torch.Tensor, Dict]) -> torch.Tensor:
     model.eval()
@@ -265,8 +259,11 @@ def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device
     forget_data = forget_bpd.view(-1).tolist()
     forget_dict["data"].append([step] + forget_data)
     wandb.log({"forget_bpd": wandb.Table(**forget_dict)}, commit=False)
+    cur_indices = torch.randperm(len(ds))[:1024]
+    cur_ds = Subset(ds, cur_indices)
+    cur_dl = DataLoader(cur_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
     if (step + 1) % args.log_every == 0:
-        eval_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, dl, reduce=False).cpu()
+        eval_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, cur_dl, reduce=False).cpu()
         args.eval_mu = eval_bpd.mean().item()
         args.eval_std = eval_bpd.std().item()
         logging.info(f"eval_mu: {args.eval_mu}, eval_std: {args.eval_std} for iteration {step}")
@@ -336,16 +333,13 @@ def get_kl_loss_fn(loss_type: str) -> Callable[[torch.Tensor, torch.Tensor, torc
         raise ValueError(f"Unknown loss type: {loss_type}")
 
 
-def get_next_forget_data(penalize_deg: float,
-                         penalize_all: bool,
-                         n_bins: int,
-                         n_pixels: int,
-                         mean: float,
-                         std: float,
-                         thresh: float,
-                         forget_images: torch.Tensor,
-                         batch_size: int, model,
-                         eps: float) -> Union[Tuple[torch.Tensor, torch.Tensor], None]:
+def get_forget_distance_loss(n_bins: int,
+                             n_pixels: int,
+                             mean: float,
+                             std: float,
+                             thresh: float,
+                             forget_images: torch.Tensor,
+                             batch_size: int, model) -> Union[Tuple[torch.Tensor, torch.Tensor], None]:
     """
     Returns the next batch of images to forget, along with the proportional weights for each example. the samples are
     drawn from the forget_images tensor, and the weights are computed according to the distance from the forget
@@ -366,36 +360,24 @@ def get_next_forget_data(penalize_deg: float,
     :return: None if no image needs to be forgotten, else a tuple of images to forget and corresponding weights.
     """
     with torch.no_grad():
-        log_p, logdet, _ = model(forget_images + torch.rand_like(forget_images) / n_bins)
-        logdet = logdet.mean()
-        cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
-        distance = ((mean + std * (thresh + eps)) - cur_bpd)
-        if penalize_deg >= 0:
-            distance_reg = distance ** penalize_deg
-        else:
-            # refactor - for now I'm trying sign * exp(abs(dist))
-            distance_reg = torch.sign(distance) * torch.exp(torch.abs(distance))
-        indices = torch.nonzero((distance > 0) | (distance < -0.3 * std), as_tuple=True)[0]
+        break_distance = compute_distance(forget_images, mean, model, n_bins, n_pixels, std, thresh)
+        indices = torch.nonzero(torch.abs(break_distance) > (0.3 * std), as_tuple=True)[0]
         if indices.nelement() == 0:
             # means that all images are above the threshold
             return None
-        if penalize_all:
-            relevant = forget_images
-            weights = distance_reg
-            sampling_indices = torch.randperm(forget_images.shape[0])[:batch_size]
-        else:
-            relevant = forget_images[indices]
-            weights = distance_reg[indices]
-            sampling_indices = torch.randint(0, relevant.shape[0], (batch_size,))
+        wandb.log({"max_distance": torch.max(break_distance[indices]).item()}, commit=False)
+    sampling_indices = torch.randperm(forget_images.shape[0])[:batch_size]
+    distance = compute_distance(forget_images[sampling_indices], mean, model, n_bins, n_pixels, std, thresh)
+    loss = F.sigmoid(distance ** 2)
+    return loss.mean()
 
-        weights = weights[sampling_indices]
-        if not penalize_all:
-            weights *= (batch_size / relevant.nelement())  # added to restrain the loss when there are only a
-            # few examples in the batch that repeat themselves
-        weights /= weights.sum()  # normalize weights to a probability vector
-        samples = relevant[sampling_indices]
-        # randint for sampling with replacement
-        return samples, weights
+
+def compute_distance(forget_images, mean, model, n_bins, n_pixels, std, thresh):
+    log_p, logdet, _ = model(forget_images + torch.rand_like(forget_images) / n_bins)
+    logdet = logdet.mean()
+    cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
+    distance = (cur_bpd - (mean + std * (thresh + 0.3)))
+    return distance
 
 
 def main():
@@ -406,7 +388,7 @@ def main():
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_all")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_distance_rand")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -424,12 +406,11 @@ def main():
     eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
     if args.alpha is None:
         args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="forget_all", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="forget_distance_rand", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
-    args.eps = 0.1
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
-    compute_step_stats(args, 0, model, None, eval_dl, eval_batches, forget_ref_data)
+    compute_step_stats(args, 0, model, None, remember_ds, eval_batches, forget_ref_data)
     remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
     if args.scheduler_step and args.scheduler_gamma:
         scheduler = StepLR(optimizer=forget_optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
@@ -438,8 +419,8 @@ def main():
     logging.info("Starting forget alpha procedure")
     finetuned_model = forget_alpha(args, remember_iter, forget_ds, model,
                  original_model, train_devices, original_model_device,
-                 forget_optimizer, eval_batches, eval_dl,
-                 forget_ref_data, scheduler=scheduler, eps=args.eps)
+                 forget_optimizer, eval_batches, remember_ds,
+                 forget_ref_data, scheduler=scheduler)
     full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
 
 
