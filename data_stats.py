@@ -9,6 +9,8 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader, Subset
+from torchvision.datasets import CelebA
+
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, \
     compute_cosine_similarity, get_partial_dataset
 from time import time
@@ -125,13 +127,17 @@ def get_celeba_attributes_stats(
     print("plotting took ", round(time() - save_time, 2), " seconds")
 
 
-def copy_dir2split_dirs(dir_path: str, first_save_dir: str, second_save_dir: str, dry_run=False):
+def copy_dir2split_dirs(dir_path: str, first_save_dir: str, second_save_dir: str, dry_run=False, num_images_first=None):
     if not dry_run and not os.path.exists(first_save_dir):
         os.makedirs(first_save_dir)
     if not dry_run and not os.path.exists(second_save_dir):
         os.makedirs(second_save_dir)
     files = os.listdir(dir_path)
-    first, second = files[:len(files) // 2], files[len(files) // 2:]
+    if num_images_first is not None:
+        mid = num_images_first
+    else:
+        mid = len(files) // 2
+    first, second = files[:mid], files[mid:]
     for file in first:
         if dry_run:
             print("source: ", os.path.join(dir_path, file))
@@ -332,6 +338,26 @@ def plot_identity_neighbors(neighbors_index: List[int], chosen_id: Union[int, st
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(save_path)
     plt.close()
+
+
+def create_celeba_subset_folder(identities_file: str, num_identities: int, out_path: str):
+    if not os.path.exists(out_path):
+        os.makedirs(out_path)
+    with open(identities_file, "r") as in_f:
+        frequent_ids = [int(line.strip()) for line in in_f.readlines()]
+    chosen_ids = random.sample(frequent_ids, num_identities)
+    for identity in chosen_ids:
+        identity_dir = f"{out_path}/{identity}"
+        os.makedirs(identity_dir)
+        os.makedirs(f"{identity_dir}/train/images")
+    with open("/a/home/cc/students/cs/malnick/thesis/datasets/celebA/celeba/identity_CelebA.txt", "r") as in_f:
+        for line in in_f.readlines():
+            line = line.strip()
+            file, identity = line.split()
+            identity = int(identity)
+            if identity in chosen_ids:
+                shutil.copy(f"/a/home/cc/students/cs/malnick/thesis/datasets/celebA/celeba/img_align_celeba/{file}",
+                            f"{out_path}/{identity}/train/images/{file}")
 
 
 if __name__ == '__main__':

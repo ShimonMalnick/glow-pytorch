@@ -7,7 +7,7 @@ import numpy as np
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, forward_kl_univariate_gaussians, args2dataset, \
-    BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video
+    BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, CELEBA_NUM_IDENTITIES
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -635,6 +635,4 @@ if __name__ == '__main__':
     exps = [f"{experiments_base}/{exp}" for exp in
             ['15_image_f_alpha_0.6', '8_image_f_alpha_0.6', '4_image_f_alpha_0.6', '1_image_f_alpha_0.6']]
 
-    with open(f"{baseline_val_dir}/distribution.json", "r") as f:
-        baseline_distribution = json.load(f)
-    plot_distribution()
+
