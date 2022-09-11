@@ -21,7 +21,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from model import Glow
 from train import calc_z_shapes
 from forget import make_forget_exp_dir, get_data_iterator, get_default_forget_transform, get_eval_data, \
-    calc_forget_loss, compute_dataloader_bpd, plot_bpd_histograms, save_model_optimizer
+    calc_regular_loss, compute_dataloader_bpd, plot_bpd_histograms, save_model_optimizer
 
 
 # Constants #
@@ -283,7 +283,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
         forget_batch = next(forget_iter)[0].to(device)
         forget_p, forget_det, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
         forget_det = forget_det.mean()
-        forget_loss, forget_p, forget_det = calc_forget_loss(forget_p, forget_det, args.img_size, n_bins)
+        forget_loss, forget_p, forget_det = calc_regular_loss(forget_p, forget_det, args.img_size, n_bins)
         if not args.debias:
             forget_loss.mul_(-1.0)
 
@@ -291,7 +291,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_iter: Iterator, model: Un
             remember_batch = next(remember_iter)[0].to(device)
             remember_p, remember_det, _ = model(remember_batch + torch.rand_like(remember_batch) / n_bins)
             remember_det = remember_det.mean()
-            remember_loss, remember_p, remember_det = calc_forget_loss(remember_p, remember_det, args.img_size, n_bins)
+            remember_loss, remember_p, remember_det = calc_regular_loss(remember_p, remember_det, args.img_size, n_bins)
             log_dict["remember"] = {"loss": remember_loss.item(),
                                     "log_p": remember_p.item(),
                                     "log_det": remember_det.item()}

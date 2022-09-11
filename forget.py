@@ -10,7 +10,7 @@ from utils import get_args, load_model, save_dict_as_json, save_model_optimizer,
     get_default_forget_transform, args2dataset, get_interpolated_alpha, set_all_seeds, \
     forward_kl_univariate_gaussians, reverse_kl_univariate_gaussians
 from torch.utils.data import DataLoader, Subset, Dataset
-from torch.optim.lr_scheduler import StepLR
+from easydict import EasyDict as edict
 from typing import Iterator, Dict, Union, List, Tuple, Optional, Callable
 from datasets import CelebAPartial, ForgetSampler
 from evaluate import full_experiment_evaluation
@@ -21,10 +21,8 @@ import matplotlib
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
-REPS_LIMIT = 10
 
-
-def calc_forget_loss(log_p, logdet, image_size, n_bins, weights=None):
+def calc_regular_loss(log_p, logdet, image_size, n_bins, weights=None):
     n_pixel = image_size * image_size * 3
     loss = -log(n_bins) * n_pixel
     loss = loss + logdet + log_p
@@ -97,15 +95,6 @@ def prob2bpd(prob, n_bins, n_pixels):
     return - prob / (math.log(2) * n_pixels) + math.log(n_bins) / math.log(2)
 
 
-def compute_relevant_indices(mu, std, thresh, model, forget_batch, n_bins, n_pixels) -> torch.Tensor:
-    with torch.no_grad():
-        log_p, logdet, _ = model(forget_batch + torch.rand_like(forget_batch) / n_bins)
-        logdet = logdet.mean()
-        cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
-        indices = torch.nonzero(cur_bpd < (mu + std * thresh), as_tuple=True)[0]
-        return indices
-
-
 def get_log_p_parameters(n_bins, n_pixel, dist, device=None):
     val = -log(n_bins) * n_pixel
     val += dist
@@ -117,15 +106,13 @@ def get_log_p_parameters(n_bins, n_pixel, dist, device=None):
     return mean, std
 
 
-def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union[Glow, torch.nn.DataParallel],
+def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model: Union[Glow, torch.nn.DataParallel],
                  original_model: Glow,
                  training_devices: List[int],
                  original_model_device: torch.device,
                  optimizer: torch.optim.Optimizer,
-                 eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
                  remember_ds: Dataset,
-                 forget_eval_data: Tuple[torch.Tensor, Dict],
-                 scheduler: Optional[StepLR] = None):
+                 forget_eval_data: Tuple[torch.Tensor, Dict]):
     kl_loss_fn = get_kl_loss_fn(args.loss)
     main_device = torch.device(f"cuda:{training_devices[0]}")
     all_forget_images = torch.stack([x[0] for x in forget_ds]).to(main_device)
@@ -149,8 +136,8 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
 
         remember_p, remember_det, _ = model(remember_batch)
         remember_det = remember_det.mean()
-        regular_loss, regular_p, regular_det = calc_forget_loss(remember_p, remember_det, args.img_size, n_bins,
-                                                                weights=None)
+        regular_loss, regular_p, regular_det = calc_regular_loss(remember_p, remember_det, args.img_size, n_bins,
+                                                                 weights=None)
         remember_dist = remember_p + remember_det
         remember_mean, remember_std = get_log_p_parameters(n_bins, n_pixels, remember_dist)
         kl_loss = kl_loss_fn(orig_mean, orig_std, remember_mean, remember_std)
@@ -161,12 +148,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
-        cur_forget_bpd = compute_step_stats(args, i, model, main_device, remember_ds,
-                                            eval_batches, forget_eval_data)
-        if args.alpha_decay is not None:
-            args.alpha = args.alpha * args.alpha_decay
+        cur_forget_bpd = compute_step_stats(args, i, model, main_device, remember_ds, forget_eval_data)
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
                    "remember": {"loss": remember_loss.item()},
                    "forget_bpd_mean": cur_forget_bpd.mean().item()
@@ -174,8 +156,7 @@ def forget_alpha(args, remember_iter: Iterator, forget_ds: Dataset, model: Union
 
         logging.info(f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
 
-        # if args.save_every is not None and (i + 1) % args.save_every == 0:
-        if args.save_every is not None and (i + 1) % 100 == 0:
+        if args.save_every is not None and (i + 1) % args.save_every == 0:
             save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
     if args.save_every is not None:
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
@@ -251,7 +232,6 @@ def plot_bpd_histograms(step, exp_name, forget_bpd: Optional[np.array] = None, e
 
 
 def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device, ds: Dataset,
-                       eval_batches: List[Tuple[str, torch.Tensor, torch.Tensor, Dict]],
                        forget_data: Tuple[torch.Tensor, Dict]) -> torch.Tensor:
     model.eval()
     forget_batch, forget_dict = forget_data
@@ -268,10 +248,6 @@ def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device
         args.eval_std = eval_bpd.std().item()
         logging.info(f"eval_mu: {args.eval_mu}, eval_std: {args.eval_std} for iteration {step}")
         plot_bpd_histograms(step, args.exp_name, forget_bpd.numpy(), eval_bpd.numpy())
-        for i, (name, batch, indices, data_dict) in enumerate(eval_batches):
-            batch_bpd = calc_batch_bpd(args, model, batch, reduce=False)
-            data_dict["data"].append([step] + batch_bpd.view(-1).cpu().tolist())
-            wandb.log({name: wandb.Table(**data_dict)}, commit=False)
 
         wandb.log({f"eval_bpd": eval_bpd.mean().item(),
                    "eval_mu": args.eval_mu,
@@ -282,33 +258,11 @@ def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device
     return forget_bpd
 
 
-def compute_adaptive_weights(prob, device, scale=1.0) -> torch.Tensor:
-    with torch.no_grad():
-        weights = F.softmax(scale / prob, dim=0)
-        return weights.to(device)
-
-
 def get_random_batch(ds: Dataset, batch_size, device=None) -> Tuple[torch.Tensor, torch.Tensor]:
     indices = torch.randperm(len(ds))[:batch_size]
     batch = [ds[idx][0] for idx in indices]
     batch = torch.stack(batch).to(device)
     return batch, indices
-
-
-def get_eval_data(args, remember_ds, device=None) -> Tuple[
-    List[Tuple[str, torch.Tensor, torch.Tensor, Dict]], DataLoader]:
-    eval_batches = []
-    if args.num_ref_batches is not None:
-        for i in range(1, args.num_ref_batches + 1):
-            name = f"ref_batch_{i}"
-            ref_batch, indices = get_random_batch(remember_ds, args.batch, device=device)
-            data_dict = {"columns": ['step'] + [f"idx {idx}" for idx in range(args.batch)],
-                         "data": []}
-            eval_batches.append((name, ref_batch, indices, data_dict))
-    ds_rand_perm = torch.randperm(len(remember_ds))
-    subset_remember_ds = Subset(remember_ds, ds_rand_perm[:1024])
-    eval_dl = DataLoader(subset_remember_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
-    return eval_batches, eval_dl
 
 
 def get_kl_loss_fn(loss_type: str) -> Callable[[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]:
@@ -388,7 +342,7 @@ def main():
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_distance_rand")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_all_identities")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -399,28 +353,23 @@ def main():
     forget_ref_batch = torch.stack([forget_ds[idx][0] for idx in range(len(forget_ds))])
     forget_ref_data = (forget_ref_batch, {"columns": ["step"] + [f"idx {i}" for i in range(len(forget_ds))],
                                           "data": []})
-    forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.forget_lr)
+    forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     remember_ds = args2dataset(args, ds_type='remember', transform=transform)
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)
-    eval_batches, eval_dl = get_eval_data(args, remember_ds, device=None)
     if args.alpha is None:
         args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="forget_distance_rand", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="forget_all_identities", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
-    compute_step_stats(args, 0, model, None, remember_ds, eval_batches, forget_ref_data)
+    compute_step_stats(args, 0, model, None, remember_ds, forget_ref_data)
     remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
-    if args.scheduler_step and args.scheduler_gamma:
-        scheduler = StepLR(optimizer=forget_optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma)
-    else:
-        scheduler = None
     logging.info("Starting forget alpha procedure")
     finetuned_model = forget_alpha(args, remember_iter, forget_ds, model,
                  original_model, train_devices, original_model_device,
-                 forget_optimizer, eval_batches, remember_ds,
-                 forget_ref_data, scheduler=scheduler)
+                 forget_optimizer, remember_ds,
+                 forget_ref_data)
     full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
 
 

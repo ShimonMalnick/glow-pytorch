@@ -9,10 +9,8 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader, Subset
-from torchvision.datasets import CelebA
-
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, \
-    compute_cosine_similarity, get_partial_dataset
+    compute_cosine_similarity, get_partial_dataset, TEST_IDENTITIES
 from time import time
 from multiprocessing import Pool
 from collections import Counter

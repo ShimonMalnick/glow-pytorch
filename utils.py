@@ -33,7 +33,9 @@ CELEBA_MALE_ATTR_IDX = 20
 CELEBA_GLASSES_ATTR_IDX = 15
 BASELINE_MODEL_PATH = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba" \
                       "/model_090001_single.pt"
-TEST_IDENTITIES = [1, 12, 13, 14, 15, 4, 6, 7, 8]
+TEST_IDENTITIES = [10015, 1614, 1624, 2261, 3751, 3928, 4244, 4941, 5423, 6002, 6280, 6648, 6928, 7124, 7271, 8677,
+                   9039, 9192, 9697, 9787]
+TEST_IDENTITIES_BASE_DIR = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_forget_splitted"
 
 
 def get_args(**kwargs) -> EasyDict:
@@ -74,32 +76,19 @@ def get_args(**kwargs) -> EasyDict:
             parser.add_argument('--forget_attribute', help='which attribute to forget', choices=['male', 'glasses'])
             parser.add_argument('--debias', help='Whether to forget or debias', action='store_true', default=None)
         else:
-            parser.add_argument('--forget_images', help='path to images to forget')
             parser.add_argument('--forget_identity', help='Identity to forget', type=int)
             parser.add_argument('--forget_size', help='Number of images to forget', type=int)
 
-        parser.add_argument('--forget_every', help='learn a forget batch every <forget_every> batches', type=int)
         parser.add_argument('--save_every', help='number of steps between model and optimizer saving periods', type=int)
         parser.add_argument('--data_split', help='optional for data split, one of [train, val, test, all]')
-        parser.add_argument('--forget_baseline', help='Whether running baseline forget experiment, meaning just'
-                                                      ' forgetting with no regularization', type=bool)
         parser.add_argument('--forget_thresh', help='Threshold on forgetting procedure. when BPD > mu + std * thresh,'
                                                     ' the finetuning is stopped.', type=float)
-        parser.add_argument('--num_ref_batches', help='number of reference batches from the remember data', type=int)
-        parser.add_argument('--adaptive_loss', action='store_true', help='Whether to use adaptive loss weights for the '
-                                                                         'forget examples', default=None)
         parser.add_argument('--forget_lr', help='Learning rate for the forget optimizer', type=float)
-        parser.add_argument('--scheduler_step', help='Learning rate scheduler step size for the forget optimizer',
-                            type=int)
-        parser.add_argument('--scheduler_gamma', help='Learning rate scheduler gamma argument for StepLR scheduler',
-                            type=float)
         parser.add_argument('--gamma', help='proportion between remembering and forcing the distributions proximity',
                             type=float)
         parser.add_argument('--alpha', help='if given, training will be done with loss updates of both forget and'
                                             ' remember data in every update, by using'
                                             ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
-        parser.add_argument('--alpha_decay', type=float,
-                            help='if given, alpha will be decayed by this amount every iteration')
         parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl', 'both'])
 
     args = parser.parse_args()
@@ -113,7 +102,6 @@ def get_args(**kwargs) -> EasyDict:
         if args_dict[k] is not None or k not in out_dict:
             out_dict[k] = args_dict[k]
 
-    assert out_dict.get('forget_baseline', False) or out_dict.path
     if out_dict.path:
         if 'ffhq' in out_dict.path.lower():
             out_dict.path = FFHQ_ROOT
@@ -515,18 +503,15 @@ def args2dset_params(args, ds_type) -> Dict:
            "exclude_images": None}
     if 'data_split' in args and args.data_split in ['train', 'all']:
         out['split'] = args.data_split
+    identity = args.forget_identity
+    assert int(identity) in TEST_IDENTITIES, "Identity not in test set"
+    assert args.forget_size, "must specify forget_size"
+    forget_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/forget"
     if ds_type == 'forget':
-        if args.forget_identity:
-            out["include_only_identities"] = [args.forget_identity]
-        elif args.forget_images:
-            assert args.forget_size, "must specify forget_size if forget_images is specified"
-            out["include_only_images"] = os.listdir(args.forget_images)[:args.forget_size]
-    if ds_type == 'remember':
-        if args.forget_identity:
-            out["exclude_identities"] = [args.forget_identity]
-        elif args.forget_images:
-            assert args.forget_size, "must specify forget_size if forget_images is specified"
-            out["exclude_images"] = os.listdir(args.forget_images)[:args.forget_size]
+        out["include_only_images"] = os.listdir(forget_images_directory)[:args.forget_size]
+    elif ds_type == 'remember':
+        reference_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference"
+        out["exclude_images"] = os.listdir(reference_images_directory) + os.listdir(forget_images_directory)
 
     return out
 
