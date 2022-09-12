@@ -73,8 +73,7 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument('--log_every', help='run heavy logs every <log_every> iterations', type=int)
     if kwargs.get('forget', False):
         if kwargs.get('forget_attribute', False):
-            parser.add_argument('--forget_attribute', help='which attribute to forget', choices=['male', 'glasses'])
-            parser.add_argument('--debias', help='Whether to forget or debias', action='store_true', default=None)
+            parser.add_argument('--forget_attribute', help='which attribute to forget', type=int)
         else:
             parser.add_argument('--forget_identity', help='Identity to forget', type=int)
             parser.add_argument('--forget_size', help='Number of images to forget', type=int)
@@ -114,6 +113,14 @@ def get_args(**kwargs) -> EasyDict:
 def save_dict_as_json(save_dict, save_path):
     with open(save_path, 'w') as out_j:
         json.dump(save_dict, out_j, indent=4)
+
+
+def get_baseline_args():
+    args_path = os.path.join(os.path.normpath(BASELINE_MODEL_PATH), "args.json")
+    with open(args_path, 'r') as in_j:
+        args = json.load(in_j)
+        args.ckpt_path = BASELINE_MODEL_PATH
+    return EasyDict(args)
 
 
 def get_dataset(data_root_path, image_size, **kwargs):
