@@ -367,9 +367,9 @@ def main():
     remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
     logging.info("Starting forget alpha procedure")
     finetuned_model = forget_alpha(args, remember_iter, forget_ds, model,
-                 original_model, train_devices, original_model_device,
-                 forget_optimizer, remember_ds,
-                 forget_ref_data)
+                                   original_model, train_devices, original_model_device,
+                                   forget_optimizer, remember_ds,
+                                   forget_ref_data)
     full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
 
 
