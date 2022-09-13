@@ -7,16 +7,16 @@ from torchvision import utils
 from model import Glow
 from utils import sample_data
 from typing import List, Tuple
-from time import time
 import wandb
 import os
+from time import time
 
 
 def make_train_exp_dir(exp_name, exist_ok=False, dir_name="train") -> str:
     base_path = os.path.join("experiments", dir_name, exp_name)
     os.makedirs(f'{base_path}/checkpoints', exist_ok=exist_ok)
     os.makedirs(f'{base_path}/samples', exist_ok=exist_ok)
-    return exp_name
+    return os.path.join(dir_name, exp_name)
 
 
 def calc_z_shapes(n_channel, input_size, n_flow, n_block) -> List[Tuple]:
@@ -103,29 +103,34 @@ def train(args, model, optimizer):
             warmup_lr = args.lr
             optimizer.param_groups[0]["lr"] = warmup_lr
             optimizer.step()
-            wandb.log({"loss": loss.item(),
-                       "log_p": log_p.item(),
-                       "log_det": log_det.item(),
-                       "prob": log_p.item() + log_det.item()})
-            pbar.set_description(
-                f"iter: {i + 1};Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; lr: {warmup_lr:.7f}"
-            )
+            if not args.debug_timing:
+                wandb.log({"loss": loss.item(),
+                           "log_p": log_p.item(),
+                           "log_det": log_det.item(),
+                           "prob": log_p.item() + log_det.item()})
+                pbar.set_description(
+                    f"iter: {i + 1};Loss: {loss.item():.5f}; logP: {log_p.item():.5f}; logdet: {log_det.item():.5f}; lr: {warmup_lr:.7f}"
+                )
 
-            if i % 100 == 0:
-                print(f'Avg time after {i + 1} iterations: {(time() - cur) / (i + 1):.5f} seconds')
-                cur_image_name = f'experiments/{args.exp_name}/samples/{str(i + 1).zfill(6)}.png'
-                with torch.no_grad():
-                    utils.save_image(
-                        model_single.reverse(z_sample).cpu().data,
-                        cur_image_name,
-                        normalize=True,
-                        nrow=10,
-                        range=(-0.5, 0.5),
-                    )
-                wandb.log({"samples": wandb.Image(cur_image_name)})
+                if i % 100 == 0:
+                    print(f'Avg time after {i + 1} iterations: {(time() - cur) / (i + 1):.5f} seconds')
+                    cur_image_name = f'experiments/{args.exp_name}/samples/{str(i + 1).zfill(6)}.png'
+                    with torch.no_grad():
+                        utils.save_image(
+                            model_single.reverse(z_sample).cpu().data,
+                            cur_image_name,
+                            normalize=True,
+                            nrow=10,
+                            range=(-0.5, 0.5),
+                        )
+                    wandb.log({"samples": wandb.Image(cur_image_name)})
 
-            if i % 10000 == 0:
-                save_model_optimizer(args, i, model, optimizer)
+                if i % 10000 == 0:
+                    save_model_optimizer(args, i, model, optimizer)
+            else:
+                if i % 100 == 0:
+                    run_time = time() - cur
+                    print(f'Avg time after {i + 1} iterations: {run_time / (i + 1):.5f} seconds')
 
 
 def evaluate(args, eval_model):
@@ -157,9 +162,10 @@ if __name__ == "__main__":
     args = get_args()
     args.exp_name = make_train_exp_dir(args.exp_name)
     wandb.init(project="Glow-Train", entity="malnick", name=args.exp_name, config=args)
+    debug_timing_mode = False
+    args.debug_timing = debug_timing_mode
     print(args)
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
-
     model_single = Glow(
         3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu
     )
@@ -170,7 +176,7 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(args.ckpt_path, map_location=lambda storage, loc: storage))
     model = model.to(device)
     print("Loaded Model successfully", flush=True)
-    if args.eval:
+    if 'eval' in args and args.eval:
         evaluate(args, model_single)
     else:
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
