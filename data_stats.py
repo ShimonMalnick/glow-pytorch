@@ -358,5 +358,49 @@ def create_celeba_subset_folder(identities_file: str, num_identities: int, out_p
                             f"{out_path}/{identity}/train/images/{file}")
 
 
+def gather_runs_forget_statistics(runs_dir: str, out_dir: str, num_forgets: List[int] = None):
+    max_iter = 800
+    if num_forgets is None:
+        num_forgets = [1, 4, 8, 15]
+    data = {n: {"iter": [],
+                "forget_mean": [],
+                "ref_forget_identity_mean": [],
+                "ref_random_mean": [],
+                "baseline_forget": [],
+                "baseline_ref_images": [],
+                "baseline_random_ref_mean": []}
+            for n in num_forgets}
+
+    for identity in num_forgets:
+        relevant_runs = glob(f"{runs_dir}/{identity}_image_id_*")
+        for run in relevant_runs:
+            with open(f"{run}/wandb/wandb/latest-run/files/output.log") as args_file:
+                log_lines = args_file.readlines()
+                for line in log_lines:
+                    if 'INFO:root:breaking after' in line:
+                        iter = int(line.split()[-2])
+                        data[identity]["iter"].append(iter)
+                        break
+                else:
+                    print("didn't find threshold for run: ", run)
+                    data[identity]["iter"].append(max_iter)
+            with open(f"{run}/distribution_stats/valid_partial_10000/forget_info.json", "r") as forget_file:
+                forget_info = json.load(forget_file)
+            data[identity]["forget_mean"].append(forget_info["forget_mean"])
+            data[identity]["ref_forget_identity_mean"].append(forget_info["ref_forget_identity_mean"])
+            data[identity]["ref_random_mean"].append(forget_info["ref_random_mean"])
+            data[identity]["baseline_forget"].append(forget_info["baseline"]["forget"])
+            data[identity]["baseline_ref_images"].append(forget_info["baseline"]["ref_images"])
+            data[identity]["baseline_random_ref_mean"].append(forget_info["baseline"]["random_ref_mean"])
+    mean_data = {n: {} for n in num_forgets}
+    for n in data:
+        for k in list(data[n]):
+            mean_data[n][k] = sum(data[n][k]) / len(data[n][k])
+    with open(f"{out_dir}/forget_all_identities_statistics.json", "w") as out_file:
+        json.dump(data, out_file, indent=4)
+    with open(f"{out_dir}/forget_all_identities_statistics_mean.json", "w") as mean_out_file:
+        json.dump(mean_data, mean_out_file, indent=4)
+
+
 if __name__ == '__main__':
     pass
