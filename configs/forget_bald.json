@@ -10,7 +10,7 @@
     "img_size": 128,
     "path": "celeba",
     "data_split": "train",
-    "exp_name": "forget_young",
+    "exp_name": "forget_bald",
     "num_workers": 16,
     "devices": -1,
     "ckpt_path": "models/baseline/continue_celeba/model_090001_single.pt",
@@ -20,5 +20,5 @@
     "gamma": 0.6,
     "alpha": 0.6,
     "loss": "both",
-    "forget_attribute": 39
+    "forget_attribute": 4
 }

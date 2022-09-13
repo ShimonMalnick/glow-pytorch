@@ -1,11 +1,13 @@
+from typing import Iterator, Union, List
 import wandb
 from torch.utils.data import Subset, Dataset, DataLoader
 from easydict import EasyDict
 from attribute_classifier import CelebaAttributeCls, DEFAULT_CLS_CKPT, load_indices_cache
 import torch
-from forget import forget_alpha, make_forget_exp_dir, full_experiment_evaluation, get_data_iterator
+from forget import make_forget_exp_dir, full_experiment_evaluation, get_data_iterator, get_kl_loss_fn, \
+    get_forget_distance_loss, get_log_p_parameters, get_kl_and_remember_loss, prob2bpd
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, CELEBA_ROOT, \
-    save_dict_as_json, compute_dataloader_bpd
+    save_dict_as_json, compute_dataloader_bpd, save_model_optimizer
 import logging
 from model import Glow
 from torchvision.datasets import CelebA
@@ -36,18 +38,74 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Modu
         args.eval_mu = eval_bpd.mean().item()
         args.eval_std = eval_bpd.std().item()
 
-        forget_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, cur_forget_dl, reduce=False).cpu()
+        forget_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model,
+                                            device, cur_forget_dl, reduce=False).cpu()
 
-        logging.info(f"eval_mu: {args.eval_mu}, eval_std: {args.eval_std}, forget_bpd: {forget_bpd.mean().item()} for iteration {step}")
+        logging.info(
+            f"eval_mu: {args.eval_mu}, eval_std: {args.eval_std}, forget_bpd: {forget_bpd.mean().item()} for iteration {step}")
         forget_signed_distance = (forget_bpd.mean().item() - args.eval_mu) / args.eval_std
         wandb.log({f"eval_bpd": eval_bpd.mean().item(),
                    "eval_mu": args.eval_mu,
                    "eval_std": args.eval_std,
                    "forget_distance": forget_signed_distance},
                   commit=False)
-    model.train()
+        return forget_bpd
 
-    return forget_bpd
+    return torch.tensor([0], dtype=torch.float)
+
+
+def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
+                     model: Union[Glow, torch.nn.DataParallel],
+                     original_model: Glow,
+                     training_devices: List[int],
+                     original_model_device: torch.device,
+                     optimizer: torch.optim.Optimizer):
+    kl_loss_fn = get_kl_loss_fn(args.loss)
+    sigmoid = torch.nn.Sigmoid()
+    main_device = torch.device(f"cuda:{training_devices[0]}")
+    n_bins = 2 ** args.n_bits
+    n_pixels = args.img_size * args.img_size * 3
+
+    remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
+    forget_iter = get_data_iterator(forget_ds, args.batch, args.num_workers)
+    for i in range(args.iter):
+        cur_forget_images = next(forget_iter)[0].to(main_device)
+        log_p, logdet, _ = model(cur_forget_images + torch.rand_like(cur_forget_images) / n_bins)
+        logdet = logdet.mean()
+        cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
+        signed_distance = (cur_bpd - (args.eval_mu + args.eval_std * (args.forget_thresh + 0.3)))
+        forget_loss = sigmoid(signed_distance ** 2).mean()
+
+        remember_batch = next(remember_iter)[0].to(main_device)
+        remember_batch += torch.rand_like(remember_batch) / n_bins
+        with torch.no_grad():
+            orig_p, orig_det, _ = original_model(remember_batch.to(original_model_device))
+            orig_dist = orig_p + orig_det.mean()
+            orig_mean, orig_std = get_log_p_parameters(n_bins, n_pixels, orig_dist, device=main_device)
+
+        kl_loss, remember_loss = get_kl_and_remember_loss(args, kl_loss_fn, model, n_bins, n_pixels, orig_mean,
+                                                          orig_std, remember_batch)
+
+        loss = args.alpha * forget_loss + (1 - args.alpha) * remember_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds)
+        wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
+                   "remember": {"loss": remember_loss.item()},
+                   "forget_bpd_mean": cur_forget_bpd.mean().item()
+                   })
+
+        logging.info(
+            f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
+
+        if args.save_every is not None and (i + 1) % args.save_every == 0:
+            save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
+    if args.save_every is not None:
+        save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
+
+    return model
 
 
 def main():
@@ -73,9 +131,6 @@ def main():
     forget_ds = Subset(celeba_ds, forget_indices)
     remember_ds = Subset(celeba_ds, list(set(range(len(celeba_ds))) - set(forget_indices.tolist())))
 
-    forget_ref_batch = torch.stack([forget_ds[idx][0] for idx in range(16)])
-    forget_ref_data = (forget_ref_batch, {"columns": ["step"] + [f"idx {i}" for i in range(16)],
-                                          "data": []})
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)
@@ -84,13 +139,10 @@ def main():
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
     compute_attribute_step_stats(args, 0, model, None, remember_ds, forget_ds)
-    remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
-    logging.info("Starting forget alpha procedure")
-    finetuned_model = forget_alpha(args, remember_iter, forget_ds, model,
-                                   original_model, train_devices, original_model_device,
-                                   forget_optimizer, remember_ds,
-                                   forget_ref_data)
-    full_experiment_evaluation(f"experiments/{args.exp_name}", args, partial=10000, model=finetuned_model)
+    logging.info("Starting forget attribute procedure")
+    forget_attribute(args, remember_ds, forget_ds, model,
+                     original_model, train_devices, original_model_device,
+                     forget_optimizer)
 
 
 if __name__ == '__main__':

@@ -1,22 +1,19 @@
 import json
 import os
 import logging
-from typing import Iterator
 from easydict import EasyDict
 from torch.utils.data import DataLoader
-from datasets import CelebAPartial
-from utils import CELEBA_ROOT, load_resnet_for_binary_cls, CELEBA_MALE_ATTR_IDX, CELEBA_GLASSES_ATTR_IDX, \
-    get_resnet_50_normalization, load_model, save_dict_as_json, get_partial_dataset, BASELINE_MODEL_PATH
+from utils import CELEBA_ROOT, load_resnet_for_binary_cls, \
+    get_resnet_50_normalization, load_model, save_dict_as_json, BASELINE_MODEL_PATH
 import pytorch_lightning as pl
 import torch
 from torchvision.datasets import CelebA
-from torchvision.transforms import ToTensor, Compose, Resize, RandomHorizontalFlip
+from torchvision.transforms import ToTensor, Compose, Resize
 from torchmetrics import Accuracy, F1Score, AUROC, ROC, MetricCollection
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from model import Glow
 from train import calc_z_shapes
-from forget import get_data_iterator
 from constants import CELEBA_NUM_ATTRIBUTES, CELEBA_ATTRIBUTES_MAP, CELEBA_TRAIN_SIZE
 
 ATTRIBUTES_INDICES_PATH = "attribute_classifier/attributes_indices.json"
@@ -46,11 +43,11 @@ class CelebaAttributeCls(pl.LightningModule):
         self.bceloss = torch.nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([(CELEBA_TRAIN_SIZE - att) / CELEBA_TRAIN_SIZE for att in attr_counts]))
         self.train_metrics = torch.nn.ModuleDict({CELEBA_ATTRIBUTES_MAP[i]:
-            MetricCollection([Accuracy(), F1Score()]).clone(
+                                                  MetricCollection([Accuracy(), F1Score()]).clone(
                 prefix=f"_train_{CELEBA_ATTRIBUTES_MAP[i]}")
             for i in range(CELEBA_NUM_ATTRIBUTES)})
         self.val_metrics = torch.nn.ModuleDict({CELEBA_ATTRIBUTES_MAP[i]:
-            MetricCollection([Accuracy(), F1Score()]).clone(
+                                                MetricCollection([Accuracy(), F1Score()]).clone(
                 prefix=f"_val_{CELEBA_ATTRIBUTES_MAP[i]}")
             for i in range(CELEBA_NUM_ATTRIBUTES)})
 
@@ -92,7 +89,7 @@ class CelebaAttributeCls(pl.LightningModule):
 
     def __log_metrics_epoch_end(self, metrics: torch.nn.ModuleDict):
         cur_metrics = {CELEBA_ATTRIBUTES_MAP[i]:
-                       metrics[CELEBA_ATTRIBUTES_MAP[i]].compute() for i in range(CELEBA_NUM_ATTRIBUTES)}
+                           metrics[CELEBA_ATTRIBUTES_MAP[i]].compute() for i in range(CELEBA_NUM_ATTRIBUTES)}
         # log and reset metrics
         for i in range(CELEBA_NUM_ATTRIBUTES):
             self.log_dict({f"epoch_{k}": v for k, v in cur_metrics[CELEBA_ATTRIBUTES_MAP[i]].items()})
@@ -212,8 +209,6 @@ def analyze_glow_attributes(n_samples, save_path, ckpt_path=BASELINE_MODEL_PATH,
             images = glow.reverse(cur_zs, reconstruct=False)
             out = cls(cls_norm(images))
             total += out.shape[0]
-            # positive_glasses += torch.sum(out[:, GLASSES_IDX] >= 0.5).item()
-            # positive_males += torch.sum(out[:, MALE_IDX] >= 0.5).item()
         logging.info(f"{i + 1}/{n_iter}")
     data = {"total": total,
             "positive males": positive_males,
@@ -223,40 +218,12 @@ def analyze_glow_attributes(n_samples, save_path, ckpt_path=BASELINE_MODEL_PATH,
     save_dict_as_json(data, save_path)
 
 
-def get_attribute_ds(args, transform, include_attribute=True) -> CelebAPartial:
-    with open(ATTRIBUTES_INDICES_PATH, "r") as f:
-        attributes_indices = json.load(f)
-    assert args.forget_attribute in ['male', 'glasses']
-    indices = attributes_indices[args.forget_attribute]
-    attr_index = CELEBA_GLASSES_ATTR_IDX if args.forget_attribute == 'glasses' else CELEBA_MALE_ATTR_IDX
-
-    def target_transform(x):
-        return x[attr_index].float()
-
-    params = {"transform": transform,
-              'target_type': 'attr',
-              "target_transform": target_transform}
-
-    if include_attribute:
-        params["include_only_indices"] = indices
-    else:
-        params["exclude_indices"] = indices
-
-    ds = get_partial_dataset(**params)
-    return ds
-
-
-def get_attribute_data_iter(args, transform, include_attribute=True) -> Iterator:
-    ds = get_attribute_ds(args, transform, include_attribute)
-    data_iterator = get_data_iterator(ds, args.batch, args.num_workers)
-    return data_iterator
-
-
 def get_cls_default_transform(img_size=128) -> Compose:
     return Compose([Resize((img_size, img_size)), ToTensor(), get_resnet_50_normalization()])
 
 
-def compute_celeba_attribute_indices(split='train', out_dir: str = 'models/attribute_classifier/all_attributes/indices'):
+def compute_celeba_attribute_indices(split='train',
+                                     out_dir: str = 'models/attribute_classifier/all_attributes/indices'):
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
     ds = CelebA(root=CELEBA_ROOT, split=split, target_type='attr', download=False, transform=ToTensor())
