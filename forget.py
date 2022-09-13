@@ -1,6 +1,8 @@
 import math
 import os
 from math import log
+from time import time
+
 import numpy as np
 from easydict import EasyDict
 from model import Glow
@@ -23,6 +25,16 @@ import matplotlib.pyplot as plt
 
 
 def calc_regular_loss(log_p, logdet, image_size, n_bins, weights=None):
+    """
+    Calculate the loss as in normalizing flows, i.e. minimizing the negative loglikelihood which is log_p + logdet.
+    The loss is normalized to BPD (bits per dimension). Weights are optional for wegihted loss.
+    :param log_p: log probability of the model on inputs x.
+    :param logdet: log determinant of the Jacobian of the flow.
+    :param image_size: the size of the image, used to calculate the number of pixels.
+    :param n_bins: qunatization level of the data
+    :param weights: weights to apply to the loss, if None, no weights are applied.
+    :return: (loss, average log_p, average logdet) in BPD units.
+    """
     n_pixel = image_size * image_size * 3
     loss = -log(n_bins) * n_pixel
     loss = loss + logdet + log_p
@@ -41,6 +53,13 @@ def calc_regular_loss(log_p, logdet, image_size, n_bins, weights=None):
 
 
 def make_forget_exp_dir(exp_name, exist_ok=False, dir_name="forget") -> str:
+    """
+    Creates a directory for the forget experiment under experiments/{dir_name}
+    :param exp_name: desired name of the experiment.
+    :param exist_ok: whether to raise an error if the directory already exists.
+    :param dir_name: name of the base directory to create the experiment directory in.
+    :return: path to the experiment directory.
+    """
     base_path = os.path.join("experiments", dir_name, exp_name)
     os.makedirs(f'{base_path}/checkpoints', exist_ok=exist_ok)
     os.makedirs(f'{base_path}/wandb', exist_ok=exist_ok)
@@ -49,6 +68,13 @@ def make_forget_exp_dir(exp_name, exist_ok=False, dir_name="forget") -> str:
 
 
 def get_data_iterator(ds: CelebAPartial, batch_size, num_workers=16) -> Iterator:
+    """
+    Creates an infinite data iterator for the given dataset.
+    :param ds: the given dataset.
+    :param batch_size: the batch size for the iterator.
+    :param num_workers: num workers for the data loader.
+    :return: an iterator over the dataset.
+    """
     sampler = None
     shuffle = True
     if len(ds) < batch_size:
@@ -92,10 +118,25 @@ def calc_batch_bpd(args, model, batch, reduce=True) -> Union[float, torch.Tensor
 
 
 def prob2bpd(prob, n_bins, n_pixels):
+    """
+    Converts a probability to BPD.
+    :param prob: the probability to convert.
+    :param n_bins: the qunaitzation level of the data.
+    :param n_pixels: the number of pixels in the image.
+    :return: the BPD of the probability.
+    """
     return - prob / (math.log(2) * n_pixels) + math.log(n_bins) / math.log(2)
 
 
 def get_log_p_parameters(n_bins, n_pixel, dist, device=None):
+    """
+    Calculates and returns the mean and std of a given probability distribution, normalized to BPD.
+    :param n_bins: the qunaitzation level of the data.
+    :param n_pixel: the number of pixels in the image.
+    :param dist: the probability distribution to calculate the mean and std of.
+    :param device: the device to put the mean and std on (optional).
+    :return:mean, std of the distribution in BPD.
+    """
     val = -log(n_bins) * n_pixel
     val += dist
     val = -val / (log(2) * n_pixel)
@@ -112,12 +153,27 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
                  original_model_device: torch.device,
                  optimizer: torch.optim.Optimizer,
                  remember_ds: Dataset,
-                 forget_eval_data: Tuple[torch.Tensor, Dict]):
+                 forget_eval_data: Tuple[torch.Tensor, Dict]) -> Union[Glow, torch.nn.DataParallel]:
+    """
+    Performs the forget experiment with the given parameters.
+    :param args: the arguments for the experiment.
+    :param remember_iter: the iterator over the remember dataset.
+    :param forget_ds: the dataset to forget.
+    :param model: the model to forget with.
+    :param original_model: the original model to compare the forgetting model to.
+    :param training_devices: the devices to train the model on.
+    :param original_model_device: the device to put the original model on.
+    :param optimizer: the optimizer to use for the forget model.
+    :param remember_ds: the dataset to remember.
+    :param forget_eval_data: the data to evaluate the forget model on.
+    :return: the forget model.
+    """
     kl_loss_fn = get_kl_loss_fn(args.loss)
     main_device = torch.device(f"cuda:{training_devices[0]}")
     all_forget_images = torch.stack([x[0] for x in forget_ds]).to(main_device)
     n_bins = 2 ** args.n_bits
     n_pixels = args.img_size * args.img_size * 3
+    cur = time()
     for i in range(args.iter):
         forget_loss = get_forget_distance_loss(n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
                                                all_forget_images, args.batch, model)
@@ -125,7 +181,6 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
             logging.info("breaking after {} iterations".format(i))
             wandb.log({f"achieved_thresh": i})
             break
-        # forget_loss.mul_(-1.0)
 
         remember_batch = next(remember_iter)[0].to(main_device)
         remember_batch += torch.rand_like(remember_batch) / n_bins
@@ -134,14 +189,8 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
             orig_dist = orig_p + orig_det.mean()
             orig_mean, orig_std = get_log_p_parameters(n_bins, n_pixels, orig_dist, device=main_device)
 
-        remember_p, remember_det, _ = model(remember_batch)
-        remember_det = remember_det.mean()
-        regular_loss, regular_p, regular_det = calc_regular_loss(remember_p, remember_det, args.img_size, n_bins,
-                                                                 weights=None)
-        remember_dist = remember_p + remember_det
-        remember_mean, remember_std = get_log_p_parameters(n_bins, n_pixels, remember_dist)
-        kl_loss = kl_loss_fn(orig_mean, orig_std, remember_mean, remember_std)
-        remember_loss = args.gamma * kl_loss + (1 - args.gamma) * regular_loss
+        kl_loss, remember_loss = get_kl_and_remember_loss(args, kl_loss_fn, model, n_bins, n_pixels, orig_mean,
+                                                          orig_std, remember_batch)
 
         loss = args.alpha * forget_loss + (1 - args.alpha) * remember_loss
 
@@ -149,38 +198,47 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
         loss.backward()
         optimizer.step()
         cur_forget_bpd = compute_step_stats(args, i, model, main_device, remember_ds, forget_eval_data)
-        wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
-                   "remember": {"loss": remember_loss.item()},
-                   "forget_bpd_mean": cur_forget_bpd.mean().item()
-                   })
+        if not args.timing:
+            wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
+                       "remember": {"loss": remember_loss.item()},
+                       "forget_bpd_mean": cur_forget_bpd.mean().item()
+                       })
 
-        logging.info(f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
+            logging.info(f"Iter: {i + 1} Forget Loss: {forget_loss.item():.5f}; Remember Loss: {remember_loss.item():.5f}")
 
-        if args.save_every is not None and (i + 1) % args.save_every == 0:
-            save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
+            if args.save_every is not None and (i + 1) % args.save_every == 0:
+                save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
+        else:
+            logging.info(f"Iteration: {i + 1} Time: {(time()- cur):.2f} Avg time per iter: "
+                         f"{((time()- cur) / (i + 1)):.2f}")
     if args.save_every is not None:
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
 
     return model
 
 
-def save_forget_checkpoint(args, forget_optimizer, iter_num, model, remember_optimizer, last=False, save_optim=True):
-    if last:
-        model_id = "last"
-    else:
-        model_id = str(iter_num + 1).zfill(6)
-    torch.save(
-        model.state_dict(), f'experiments/{args.exp_name}/checkpoints/model_{model_id}.pt'
-    )
-    if save_optim:
-        torch.save(
-            forget_optimizer.state_dict(),
-            f'experiments/{args.exp_name}/checkpoints/forget_optim_{model_id}.pt'
-        )
-        torch.save(
-            remember_optimizer.state_dict(),
-            f'experiments/{args.exp_name}/checkpoints/regular_optim_{model_id}.pt'
-        )
+def get_kl_and_remember_loss(args, kl_loss_fn, model, n_bins, n_pixels, orig_mean, orig_std, remember_batch):
+    """
+    Calculates and return the KL loss and the remember loss.
+    :param args:  the arguments for the experiment.
+    :param kl_loss_fn:  the KL loss function to use.
+    :param model:  the model to calculate the loss for.
+    :param n_bins:  the qunaitzation level of the data.
+    :param n_pixels:  the number of pixels in the image.
+    :param orig_mean:  the mean of the original model.
+    :param orig_std:  the std of the original model.
+    :param remember_batch:  the batch to calculate the remember loss for.
+    :return:  the KL loss and the remember loss.
+    """
+    remember_p, remember_det, _ = model(remember_batch)
+    remember_det = remember_det.mean()
+    regular_loss, regular_p, regular_det = calc_regular_loss(remember_p, remember_det, args.img_size, n_bins,
+                                                             weights=None)
+    remember_dist = remember_p + remember_det
+    remember_mean, remember_std = get_log_p_parameters(n_bins, n_pixels, remember_dist)
+    kl_loss = kl_loss_fn(orig_mean, orig_std, remember_mean, remember_std)
+    remember_loss = args.gamma * kl_loss + (1 - args.gamma) * regular_loss
+    return kl_loss, remember_loss
 
 
 def args2data_iter(args, ds_type, transform) -> Iterator:
@@ -197,6 +255,13 @@ def args2data_iter(args, ds_type, transform) -> Iterator:
 
 
 def plot_bpd_histograms(step, exp_name, forget_bpd: Optional[np.array] = None, eval_bpd: Optional[np.array] = None):
+    """
+    Plots the histograms of the BPD distribution of both the forget and the eval datasets.
+    :param step:  the current step.
+    :param exp_name:  the name of the experiment.
+    :param forget_bpd:  the BPD distribution of the forget dataset.
+    :param eval_bpd:  the BPD distribution of the eval dataset.
+    """
     log_params = {}
     if forget_bpd is not None:
         plt.figure()
@@ -236,9 +301,10 @@ def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device
     model.eval()
     forget_batch, forget_dict = forget_data
     forget_bpd = calc_batch_bpd(args, model, forget_batch, reduce=False).cpu()
-    forget_data = forget_bpd.view(-1).tolist()
-    forget_dict["data"].append([step] + forget_data)
-    wandb.log({"forget_bpd": wandb.Table(**forget_dict)}, commit=False)
+    if not args.timing:
+        forget_data = forget_bpd.view(-1).tolist()
+        forget_dict["data"].append([step] + forget_data)
+        wandb.log({"forget_bpd": wandb.Table(**forget_dict)}, commit=False)
     cur_indices = torch.randperm(len(ds))[:1024]
     cur_ds = Subset(ds, cur_indices)
     cur_dl = DataLoader(cur_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
@@ -246,13 +312,14 @@ def compute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device
         eval_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, cur_dl, reduce=False).cpu()
         args.eval_mu = eval_bpd.mean().item()
         args.eval_std = eval_bpd.std().item()
-        logging.info(f"eval_mu: {args.eval_mu}, eval_std: {args.eval_std} for iteration {step}")
-        plot_bpd_histograms(step, args.exp_name, forget_bpd.numpy(), eval_bpd.numpy())
+        if not args.timing:
+            logging.info(f"eval_mu: {args.eval_mu}, eval_std: {args.eval_std} for iteration {step}")
+            plot_bpd_histograms(step, args.exp_name, forget_bpd.numpy(), eval_bpd.numpy())
 
-        wandb.log({f"eval_bpd": eval_bpd.mean().item(),
-                   "eval_mu": args.eval_mu,
-                   "eval_std": args.eval_std},
-                  commit=False)
+            wandb.log({f"eval_bpd": eval_bpd.mean().item(),
+                       "eval_mu": args.eval_mu,
+                       "eval_std": args.eval_std},
+                      commit=False)
     model.train()
 
     return forget_bpd
@@ -339,6 +406,7 @@ def main():
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
+    args.timing = False
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
