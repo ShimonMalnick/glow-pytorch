@@ -592,9 +592,8 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
     ref_forget_images = []
     if args.forget_size < len(forget_ds):
         ref_forget_images.extend([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))])
-    args.forget_images = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_frequent_identities/1_second/train" \
-                         "/images"
-    same_id_ref_ds = args2dataset(args, "forget", transform)
+
+    same_id_ref_ds = args2dataset(args, "forget_ref", transform)
     ref_forget_images.extend([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))])
     ref_forget_images = torch.stack(ref_forget_images).to(device)
     data_sources["ref_forget_identity"] = ref_forget_images
@@ -768,13 +767,10 @@ def plotly_qq_plot(tensor, save_path):
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    base_dir = "experiments/forget_all_identities/"
-    experiments = [base_dir + p + "_image_id_10015" for p in ["1", "4", "8", "15"]]
-    baseline_dist = torch.load("models/baseline/continue_celeba/distribution_stats/train_partial_10000/nll_distribution.pt")
+    base_dir = "experiments/forget_all_identities"
+    experiments = os.listdir(base_dir)
     for exp in experiments:
-        cur_dist = torch.load(exp + "/distribution_stats/train_partial_10000/nll_distribution.pt")
-        save_path = exp + "/distribution_stats/train_partial_10000/nll_vs_baseline.pdf"
-        dict_path = exp + "/distribution_stats/train_partial_10000/nll_vs_baseline.json"
-        plot_paper_plotly_2_distributions(cur_dist, baseline_dist, save_path, dict_path=dict_path)
-        print("finished ", exp)
+        cur_exp_dir = os.path.join(base_dir, exp)
+        compare_forget_values(cur_exp_dir, reps=10, split='valid', partial=10000)
+
 
