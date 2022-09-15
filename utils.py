@@ -2,11 +2,13 @@ import math
 import logging
 import os
 import random
+import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
 from os.path import join
 from typing import Union, List, Dict
-
+import plotly.graph_objects as go
+import plotly.express as px
 import imageio
 import numpy as np
 from PIL import Image
@@ -612,3 +614,22 @@ def images2video(images: Union[str, List[str]], video_path: str, fps=5):
     for im in images:
         writer.append_data(imageio.imread(im))
     writer.close()
+
+
+def set_fig_config(fig: go.Figure):
+    fig.update_layout(width=500, height=250,
+                      font_family="Serif", font_size=14,
+                      margin_l=5, margin_t=5, margin_b=5, margin_r=5)
+    return fig
+
+
+def save_fig(fig, save_path):
+    fig.write_image(save_path, width=1.5 * 300, height=0.75 * 300)
+
+
+def plotly_init():
+    figure = "placeholder_figure.pdf"
+    debug_fig = px.scatter(x=[0, 1, 2, 3, 4], y=[0, 1, 4, 9, 16])
+    debug_fig.write_image(figure, format="pdf")
+    time.sleep(2)
+    debug_fig.data = []

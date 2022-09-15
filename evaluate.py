@@ -4,10 +4,12 @@ import re
 from time import time
 import logging
 import numpy as np
+import plotly
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, forward_kl_univariate_gaussians, args2dataset, \
-    BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, CELEBA_NUM_IDENTITIES
+    BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, set_fig_config, \
+    save_fig, plotly_init
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -17,6 +19,8 @@ from typing import Iterable, Tuple, Dict, List, Union
 from datasets import CelebAPartial
 from easydict import EasyDict as edict
 import matplotlib
+import plotly.graph_objects as go
+from statsmodels.graphics.gofplots import qqplot
 
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
@@ -533,7 +537,8 @@ def get_model_nll_on_multiple_data_sources(model,
     return dict(zip(names, nlls))
 
 
-def get_baseline_relative_distance(forget_size, split='valid', partial=10000, random_ds=None, device=None, reps=10) -> Dict:
+def get_baseline_relative_distance(forget_size, split='valid', partial=10000, random_ds=None, device=None,
+                                   reps=10) -> Dict:
     TOTAL_FORGET_IMAGES = 15  # for the experiments i'm running these are constant values
     TOTAL_REF_IMAGES = 14
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
@@ -548,7 +553,7 @@ def get_baseline_relative_distance(forget_size, split='valid', partial=10000, ra
     same_id_ref_vals = [baseline_forget_dict['same_id_ref'][str(i)] for i in range(TOTAL_REF_IMAGES)]
     forget_untrained_vals = [baseline_forget_dict['forget'][str(i)] for i in range(forget_size, TOTAL_FORGET_IMAGES)]
     ref_images_mean = sum(same_id_ref_vals + forget_untrained_vals) / (
-                len(same_id_ref_vals) + len(forget_untrained_vals))
+            len(same_id_ref_vals) + len(forget_untrained_vals))
     res["ref_images"] = nll_to_sigma_normalized(ref_images_mean, baseline_mean, baseline_std)
     with open(f"{baseline_base}/args.json", "r") as baseline_f:
         baseline_args = edict(json.load(baseline_f))
@@ -626,13 +631,150 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000):
                       f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json")
 
 
+def plot_paper_plotly_histogram(nll_tensor, filename, x_axis_title=r'$-\log p(x;\theta)$', y_axis_title='Density'):
+    plotly_init()
+    nll_tensor = nll_tensor.cpu()
+    mean, std = nll_tensor.mean().item(), nll_tensor.std().item()
+    colors = plotly.colors.qualitative.D3
+    n_bins_plot = int(math.sqrt(nll_tensor.nelement()))
+    layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)')
+    fig = go.Figure(layout=layout)
+    fig = set_fig_config(fig)
+    hist = go.Histogram(x=nll_tensor, nbinsx=n_bins_plot, histnorm='probability density',
+                        marker=dict(color=colors[4]), opacity=0.75)
+    fig.add_trace(hist)
+    x = np.linspace(nll_tensor.min().item(), nll_tensor.max().item(), n_bins_plot)
+    y = np_gaussian_pdf(x, mean, std)
+    line = go.Scatter(x=x, y=y, marker=dict(color='black'))
+    fig.add_trace(line)
+    fig.update_layout(xaxis_title=x_axis_title, yaxis_title=y_axis_title, showlegend=False)
+    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Red')
+    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
+    if 'html' in filename:
+        fig.write_html(filename)
+    else:
+        save_fig(fig, filename)
+
+
+def plot_paper_plotly_2_distributions(model_dist: Union[str, torch.Tensor],
+                                      baseline_dist: Union[str, torch.Tensor],
+                                      save_path: str, dict_path=None):
+    if isinstance(model_dist, str):
+        model_dist = torch.load(model_dist)
+    if isinstance(baseline_dist, str):
+        baseline_dist = torch.load(baseline_dist)
+    model_dist = model_dist.numpy()
+    baseline_dist = baseline_dist.numpy()
+
+    plotly_init()
+    colors = plotly.colors.qualitative.Dark2
+    plot_n_bins = int(max(np.sqrt(len(model_dist)), np.sqrt(len(baseline_dist))))
+
+    layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)')
+    fig = go.Figure(layout=layout)
+    fig = set_fig_config(fig)
+    hist_model = go.Histogram(x=model_dist, nbinsx=plot_n_bins, histnorm='probability density',
+                              marker=dict(color=colors[0]), opacity=0.75, name=r'$\theta_F$')
+    fig.add_trace(hist_model)
+    x_model = np.linspace(model_dist.min().item(), model_dist.max().item(), plot_n_bins)
+    y_model = np_gaussian_pdf(x_model, model_dist.mean(), model_dist.std())
+    line_model = go.Scatter(x=x_model, y=y_model, marker=dict(color='black'), name=r'$\hat{\theta}_F$')
+    fig.add_trace(line_model)
+
+    hist_baseline = go.Histogram(x=baseline_dist, nbinsx=plot_n_bins, histnorm='probability density',
+                                 marker=dict(color=colors[1]), opacity=0.75, name=r'$\theta_B$')
+    fig.add_trace(hist_baseline)
+    x_baseline = np.linspace(baseline_dist.min().item(), baseline_dist.max().item(), plot_n_bins)
+    y_baseline = np_gaussian_pdf(x_baseline, baseline_dist.mean(), baseline_dist.std())
+    line_baseline = go.Scatter(x=x_baseline, y=y_baseline, marker=dict(color=colors[2]), name=r'$\hat{\theta}_B$')
+    fig.add_trace(line_baseline)
+
+    model_mu, model_sigma = np.mean(model_dist), np.std(model_dist)
+    baseline_mu, baseline_sigma = np.mean(baseline_dist), np.std(baseline_dist)
+    forward_kl = forward_kl_univariate_gaussians(baseline_mu, baseline_sigma, model_mu, model_sigma)
+    reverse_kl = forward_kl_univariate_gaussians(model_mu, model_sigma, baseline_mu, baseline_sigma)
+
+    fig.add_annotation(text=r"$\mathcal{L}_R(\theta_F,\mathcal{D}_R) = " + f"{(forward_kl + reverse_kl):.2f}" + r"$",
+                       xref="paper", yref="paper", x=0.95, y=0.95, showarrow=False, font=dict(size=10))
+
+    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Red')
+    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
+
+    if dict_path:
+        d = {'baseline': {'mean': float(baseline_mu), 'std': float(baseline_sigma)},
+             'model': {'mean': float(model_mu), 'std': float(model_sigma)},
+             'forward_kl': float(forward_kl),
+             'reverse_kl': float(reverse_kl)}
+        save_dict_as_json(d, dict_path)
+
+    if 'html' in save_path:
+        fig.write_html(save_path)
+    else:
+        save_fig(fig, save_path)
+
+
+def plotly_qq_plot(tensor, save_path):
+    plotly_init()
+    tensor = tensor.cpu()
+    colors = plotly.colors.qualitative.D3
+    qqplot_data = qqplot(tensor, line='s').gca().lines
+    layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)')
+    fig = go.Figure(layout=layout)
+    fig = set_fig_config(fig)
+
+    fig.add_trace({
+        'type': 'scatter',
+        'x': qqplot_data[0].get_xdata(),
+        'y': qqplot_data[0].get_ydata(),
+        'mode': 'markers',
+        'marker': {
+            'color': colors[8]
+        }
+    })
+
+    fig.add_trace({
+        'type': 'scatter',
+        'x': qqplot_data[1].get_xdata(),
+        'y': qqplot_data[1].get_ydata(),
+        'mode': 'lines',
+        'line': {
+            'color': 'black'
+        }
+
+    })
+
+    fig['layout'].update({
+        'xaxis': {
+            'title': 'Theoritical Quantities',
+            'zeroline': False
+        },
+        'yaxis': {
+            'title': 'Sample Quantities'
+        },
+        'showlegend': False,
+        'width': 800,
+        'height': 700,
+    })
+
+    fig.update_layout(showlegend=False)
+    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Red')
+    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
+    if 'html' in save_path:
+        fig.write_html(save_path)
+    else:
+        save_fig(fig, save_path)
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    experiments_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_distance_rand"
-    baseline_dir = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
-    baseline_val_dir = f"{baseline_dir}/distribution_stats/valid_partial_10000"
-    exps = [f"{experiments_base}/{exp}" for exp in
-            ['15_image_f_alpha_0.6', '8_image_f_alpha_0.6', '4_image_f_alpha_0.6', '1_image_f_alpha_0.6']]
-
+    base_dir = "experiments/forget_all_identities/"
+    experiments = [base_dir + p + "_image_id_10015" for p in ["1", "4", "8", "15"]]
+    baseline_dist = torch.load("models/baseline/continue_celeba/distribution_stats/train_partial_10000/nll_distribution.pt")
+    for exp in experiments:
+        cur_dist = torch.load(exp + "/distribution_stats/train_partial_10000/nll_distribution.pt")
+        save_path = exp + "/distribution_stats/train_partial_10000/nll_vs_baseline.pdf"
+        dict_path = exp + "/distribution_stats/train_partial_10000/nll_vs_baseline.json"
+        plot_paper_plotly_2_distributions(cur_dist, baseline_dist, save_path, dict_path=dict_path)
+        print("finished ", exp)
 
