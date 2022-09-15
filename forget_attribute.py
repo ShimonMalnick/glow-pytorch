@@ -1,16 +1,20 @@
-from typing import Iterator, Union, List
+import json
+import os
+from typing import Union, List, Dict
 import wandb
+from PIL import Image
 from torch.utils.data import Subset, Dataset, DataLoader
 from easydict import EasyDict
 from attribute_classifier import CelebaAttributeCls, DEFAULT_CLS_CKPT, load_indices_cache
 import torch
-from forget import make_forget_exp_dir, full_experiment_evaluation, get_data_iterator, get_kl_loss_fn, \
-    get_forget_distance_loss, get_log_p_parameters, get_kl_and_remember_loss, prob2bpd
+from forget import make_forget_exp_dir, get_data_iterator, get_kl_loss_fn, get_log_p_parameters,\
+    get_kl_and_remember_loss, prob2bpd
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, CELEBA_ROOT, \
-    save_dict_as_json, compute_dataloader_bpd, save_model_optimizer
+    save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASELINE_MODEL_PATH, get_resnet_50_normalization
 import logging
 from model import Glow
 from torchvision.datasets import CelebA
+from train import calc_z_shapes
 
 
 def load_cls(ckpt_path: str = DEFAULT_CLS_CKPT, device=None) -> CelebaAttributeCls:
@@ -108,8 +112,71 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
     return model
 
 
+def save_random_samples(exp_dir: str, model_ckpt: str, out_dir: str, num_samples=4, with_baseline=True):
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    with open(os.path.join(exp_dir, "args.json"), "r") as f:
+        args = EasyDict(json.load(f))
+    args.ckpt_path = model_ckpt
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(args, device, training=False)
+    models = [("", model)]
+    if with_baseline:
+        args.ckpt_path = BASELINE_MODEL_PATH
+        models.append(("baseline_", load_model(args, device, training=False)))
+    z_shapes = calc_z_shapes(3, 128, 32, 4)
+    temp = 0.5
+    for prefix, cur_model in models:
+        cur_zs = []
+        for shape in z_shapes:
+            cur_zs.append(torch.randn(num_samples, *shape).to(device) * temp)
+        with torch.no_grad():
+            model_images = cur_model.reverse(cur_zs, reconstruct=False).cpu() + 0.5  # added 0.5 for normalization
+            model_images = model_images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+            for i in range(num_samples):
+                im = Image.fromarray(model_images[i])
+                im.save(os.path.join(out_dir, f"{prefix}temp_{int(temp * 10)}_sample_{i}.png"))
+
+
+def get_random_samples_cls_scores(exp_dir: str, ckpt_path: str, n_samples: int = 2048) -> Dict:
+    with open(f"{exp_dir}/args.json", "r") as f:
+        args = EasyDict(json.load(f))
+    args.ckpt_path = ckpt_path
+    cls_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    cls = load_cls(device=cls_device)
+    args.ckpt_path = BASELINE_MODEL_PATH
+    models_ckpts = [ckpt_path, BASELINE_MODEL_PATH]
+    batch_size = 256
+    temp = 0.5
+    n_iter = n_samples // batch_size
+    cls_transform = get_resnet_50_normalization()
+    z_shapes = calc_z_shapes(3, 128, 32, 4)
+    scores = [0, 0]
+    total = 0
+    for idx, cur_ckpt in enumerate(models_ckpts):
+        args.ckpt_path = cur_ckpt
+        cur_device = torch.device(f"cuda:{idx + 1}" if torch.cuda.is_available() else "cpu")
+        cur_model = load_model(args, device=cur_device, training=False)
+        total = 0
+        for i in range(n_iter):
+            cur_zs = []
+            for shape in z_shapes:
+                cur_zs.append(torch.randn(batch_size, *shape).to(cur_device) * temp)
+            with torch.no_grad():
+                model_images = cur_model.reverse(cur_zs, reconstruct=False).to(cls_device) + 0.5
+                model_images = cls_transform(model_images)
+                cls_output = cls(model_images)[:, args.forget_attribute]
+                scores[idx] += (cls_output > 0.5).sum().item()
+            total += cls_output.shape[0]
+        del cur_model
+        assert total == n_samples, f"Expected {n_samples} samples, got {total}"
+    data = {"model": scores[0], "baseline": scores[1], "total": total}
+    ckpt_name = os.path.basename(ckpt_path).split(".")[0]
+    save_dict_as_json(data, os.path.join(exp_dir, f"{ckpt_name}_cls_scores_{n_samples}_samples.json"))
+    return data
+
+
 def main():
-    set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True, forget_attribute=True)
     all_devices = list(range(torch.cuda.device_count()))
@@ -146,4 +213,13 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    set_all_seeds(seed=37)
+    base_path = "experiments/forget_attributes/forget_"
+    base_dirs = [base_path + s + "_short" for s in ["blond_hair", "bald", "young", "rosy_cheeks"]]
+    for d in base_dirs:
+        cur_checkpoints = os.listdir(f"{d}/checkpoints")
+        for ckpt in cur_checkpoints:
+            ckpt_name = ckpt.split(".")[0]
+            save_random_samples(d, f"{d}/checkpoints/{ckpt}",
+                                out_dir=f"{d}/random_samples_{ckpt_name}", num_samples=16)
+            get_random_samples_cls_scores(d, f"{d}/checkpoints/{ckpt}", n_samples=16384)
