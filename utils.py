@@ -120,9 +120,9 @@ def save_dict_as_json(save_dict, save_path):
 
 
 def get_baseline_args():
-    args_path = os.path.join(os.path.normpath(BASELINE_MODEL_PATH), "args.json")
+    args_path = os.path.join(os.path.dirname(BASELINE_MODEL_PATH), "args.json")
     with open(args_path, 'r') as in_j:
-        args = json.load(in_j)
+        args = EasyDict(json.load(in_j))
         args.ckpt_path = BASELINE_MODEL_PATH
     return EasyDict(args)
 

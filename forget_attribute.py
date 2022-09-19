@@ -1,16 +1,18 @@
 import json
 import os
+from time import time
 from typing import Union, List, Dict
 import wandb
 from PIL import Image
 from torch.utils.data import Subset, Dataset, DataLoader
 from easydict import EasyDict
-from attribute_classifier import CelebaAttributeCls, DEFAULT_CLS_CKPT, load_indices_cache
+from attribute_classifier import CelebaAttributeCls, DEFAULT_CLS_CKPT, load_indices_cache, get_cls_default_transform
 import torch
 from forget import make_forget_exp_dir, get_data_iterator, get_kl_loss_fn, get_log_p_parameters,\
     get_kl_and_remember_loss, prob2bpd
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, CELEBA_ROOT, \
-    save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASELINE_MODEL_PATH, get_resnet_50_normalization
+    save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASELINE_MODEL_PATH, get_resnet_50_normalization,\
+    get_baseline_args
 import logging
 from model import Glow
 from torchvision.datasets import CelebA
@@ -25,7 +27,7 @@ def load_cls(ckpt_path: str = DEFAULT_CLS_CKPT, device=None) -> CelebaAttributeC
     return model
 
 
-def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Module, device, remember_ds: Dataset,
+def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.DataParallel, device, remember_ds: Dataset,
                                  forget_ds: Dataset) -> torch.Tensor:
     model.eval()
     cur_forget_indices = torch.randperm(len(forget_ds))[:1024]
@@ -53,6 +55,8 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Modu
                    "eval_std": args.eval_std,
                    "forget_distance": forget_signed_distance},
                   commit=False)
+        # to generate images using the reverse funciton, we need the module itself from the DataParallel wrapper
+        generate_random_sample_evaluation(model.module, device, args, f"{args.exp_name}/random_samples/step_{step}.pt")
         return forget_bpd
 
     return torch.tensor([0], dtype=torch.float)
@@ -138,7 +142,19 @@ def save_random_samples(exp_dir: str, model_ckpt: str, out_dir: str, num_samples
                 im.save(os.path.join(out_dir, f"{prefix}temp_{int(temp * 10)}_sample_{i}.png"))
 
 
-def get_random_samples_cls_scores(exp_dir: str, ckpt_path: str, n_samples: int = 2048) -> Dict:
+def generate_random_sample_evaluation(model, device, args, save_path, temp=0.5, n_samples=512, batch_size=256):
+    z_shapes = calc_z_shapes(3, args.img_size, args.n_flow, args.n_block)
+    n_iter = n_samples // batch_size
+    for i in range(n_iter):
+        cur_zs = []
+        for shape in z_shapes:
+            cur_zs.append(torch.randn(batch_size, *shape, device=device) * temp)
+        with torch.no_grad():
+            model_images = model.reverse(cur_zs, reconstruct=False)
+    torch.save(model_images.cpu(), save_path)
+
+
+def get_random_samples_cls_scores(exp_dir: str, ckpt_path: str, n_samples: int = 2048, save_res=True) -> Dict:
     with open(f"{exp_dir}/args.json", "r") as f:
         args = EasyDict(json.load(f))
     args.ckpt_path = ckpt_path
@@ -172,7 +188,8 @@ def get_random_samples_cls_scores(exp_dir: str, ckpt_path: str, n_samples: int =
         assert total == n_samples, f"Expected {n_samples} samples, got {total}"
     data = {"model": scores[0], "baseline": scores[1], "total": total}
     ckpt_name = os.path.basename(ckpt_path).split(".")[0]
-    save_dict_as_json(data, os.path.join(exp_dir, f"{ckpt_name}_cls_scores_{n_samples}_samples.json"))
+    if save_res:
+        save_dict_as_json(data, os.path.join(exp_dir, f"{ckpt_name}_cls_scores_{n_samples}_samples.json"))
     return data
 
 
@@ -183,6 +200,7 @@ def main():
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
     args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_attributes")
+    os.makedirs(f"experiments/{args.exp_name}/random_samples")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -205,7 +223,7 @@ def main():
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
-    compute_attribute_step_stats(args, 0, model, None, remember_ds, forget_ds)
+    compute_attribute_step_stats(args, args.log_every - 1, model, None, remember_ds, forget_ds)
     logging.info("Starting forget attribute procedure")
     forget_attribute(args, remember_ds, forget_ds, model,
                      original_model, train_devices, original_model_device,
@@ -214,12 +232,4 @@ def main():
 
 if __name__ == '__main__':
     set_all_seeds(seed=37)
-    base_path = "experiments/forget_attributes/forget_"
-    base_dirs = [base_path + s + "_short" for s in ["blond_hair", "bald", "young", "rosy_cheeks"]]
-    for d in base_dirs:
-        cur_checkpoints = os.listdir(f"{d}/checkpoints")
-        for ckpt in cur_checkpoints:
-            ckpt_name = ckpt.split(".")[0]
-            save_random_samples(d, f"{d}/checkpoints/{ckpt}",
-                                out_dir=f"{d}/random_samples_{ckpt_name}", num_samples=16)
-            get_random_samples_cls_scores(d, f"{d}/checkpoints/{ckpt}", n_samples=16384)
+    main()
