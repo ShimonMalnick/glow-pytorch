@@ -359,7 +359,8 @@ def create_celeba_subset_folder(identities_file: str, num_identities: int, out_p
 
 
 def gather_runs_forget_statistics(runs_dir: str, out_dir: str, num_forgets: List[int] = None):
-    max_iter = 800
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
     if num_forgets is None:
         num_forgets = [1, 4, 8, 15]
     data = {n: {"iter": [],
@@ -383,7 +384,10 @@ def gather_runs_forget_statistics(runs_dir: str, out_dir: str, num_forgets: List
                         break
                 else:
                     print("didn't find threshold for run: ", run)
-                    data[identity]["iter"].append(max_iter)
+                    with open(f"{run}/args.json", "r") as args_file:
+                        args = json.load(args_file)
+                        iter = args["iter"]
+                        data[identity]["iter"].append(iter)
             with open(f"{run}/distribution_stats/valid_partial_10000/forget_info.json", "r") as forget_file:
                 forget_info = json.load(forget_file)
             data[identity]["forget_mean"].append(forget_info["forget_mean"])
@@ -402,5 +406,32 @@ def gather_runs_forget_statistics(runs_dir: str, out_dir: str, num_forgets: List
         json.dump(mean_data, mean_out_file, indent=4)
 
 
+def get_paper_table_data(forget_json_file: str, output_file: str, avg_time_per_iter=17.28):
+    with open(forget_json_file, "r") as in_f:
+        data = json.load(in_f)
+    time_per_iter = avg_time_per_iter
+    baseline_time_per_iter = data["baseline avg time per iteration(seconds)"]
+    baseline_n_iters = 590000
+    with open(output_file, "w") as out_f:
+        for k in ["1", "4", "8", "15"]:
+            dff = round(data[k]["forget_mean"], 2)
+            dfb = round(data[k]["baseline_forget"], 2)
+            df_tag_f = round(data[k]["ref_forget_identity_mean"], 2)
+            df_tag_b = round(data[k]["baseline_ref_images"], 2)
+            drf = round(data[k]["ref_random_mean"], 2)
+            drb = round(data[k]["baseline_random_ref_mean"], 2)
+            t_min = round(data[k]["iter"] * time_per_iter / 60, 1)
+            t_against_baseline = (data[k]["iter"] * time_per_iter) / (baseline_time_per_iter * baseline_n_iters)
+            t_percentage = round(t_against_baseline * 100, 2)
+            cur_line = fr"$\abs{{\D_F}}={k}$&{dff}&{dfb}&{df_tag_f}&{df_tag_b}&{drf}&{drb}&{t_min}&{t_percentage}\%\tabularnewline"
+            out_f.write(cur_line + "\n")
+
+
 if __name__ == '__main__':
-    pass
+    base_dir = "experiments/forget_all_identities_log_10"
+    out_dir = "experiments/all_identities_log_10_stats"
+    gather_runs_forget_statistics(base_dir, out_dir)
+
+    forget_file = "experiments/all_identities_log_5_stats/forget_all_identities_statistics_mean.json"
+    output_file = "experiments/all_identities_log_5_stats/forget_all_identities_statistics_mean.tex"
+    get_paper_table_data(forget_file, output_file, avg_time_per_iter=4.6)
