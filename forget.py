@@ -215,7 +215,7 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
                          f"{((time()- cur) / (i + 1)):.2f}")
     if args.save_every is not None:
         if args.timing:
-            with open(os.path.join(args.exp_name, "timing.txt"), "a") as f:
+            with open(os.path.join("experiments", args.exp_name, "timing.txt"), "a+") as f:
                 f.write(f"Total avg time per iter[seconds]: {avg_time}\n")
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
 
@@ -411,11 +411,11 @@ def main():
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
-    args.timing = False
+    args.timing = True
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_all_identities")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_all_identities_log_10")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -432,7 +432,7 @@ def main():
     args["forget_ds_len"] = len(forget_ds)
     if args.alpha is None:
         args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="forget_all_identities", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="forget_all_identities_log_10", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
