@@ -7,6 +7,8 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
 from os.path import join
 from typing import Union, List, Dict
+from statsmodels.graphics.gofplots import qqplot
+import plotly
 import plotly.graph_objects as go
 import plotly.express as px
 import imageio
@@ -505,7 +507,9 @@ def args2dset_params(args, ds_type) -> Dict:
     :param ds_type: one of 'forget' or 'remember'
     :return: dictionary contating the parameters to be passed to the dataset constructor
     """
-    assert ds_type in ['forget', 'remember'], "ds_type must be one of 'forget' or 'remember'"
+    assert ds_type in ['forget', 'remember', 'forget_ref'],\
+        "ds_type must be one of 'forget' or 'remember' or 'forget_ref'"
+
     out = {"include_only_identities": None,
            "exclude_identities": None,
            "include_only_images": None,
@@ -521,6 +525,9 @@ def args2dset_params(args, ds_type) -> Dict:
     elif ds_type == 'remember':
         reference_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference"
         out["exclude_images"] = os.listdir(reference_images_directory) + os.listdir(forget_images_directory)
+    elif ds_type == 'forget_ref':
+        images_paths = os.listdir(f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference")
+        out["include_only_images"] = images_paths
 
     return out
 
@@ -616,9 +623,9 @@ def images2video(images: Union[str, List[str]], video_path: str, fps=5):
     writer.close()
 
 
-def set_fig_config(fig: go.Figure):
+def set_fig_config(fig: go.Figure, font_size=14):
     fig.update_layout(width=500, height=250,
-                      font_family="Serif", font_size=14,
+                      font=dict(family="Serif", size=font_size),
                       margin_l=5, margin_t=5, margin_b=5, margin_r=5)
     return fig
 
@@ -633,3 +640,60 @@ def plotly_init():
     debug_fig.write_image(figure, format="pdf")
     time.sleep(2)
     debug_fig.data = []
+
+
+def plotly_qq_plot(tensor: torch.Tensor, save_path: str):
+    """
+    Plots a qqplot of the given samples, against normnal distribution
+    :param tensor: the tensor to plot
+    :param save_path: the path to save the plot. if path end with .html, the plot will be saved as html.
+    """
+    plotly_init()
+    tensor = tensor.cpu()
+    colors = plotly.colors.qualitative.D3
+    qqplot_data = qqplot(tensor, line='s').gca().lines
+    layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)')
+    fig = go.Figure(layout=layout)
+    fig = set_fig_config(fig)
+
+    fig.add_trace({
+        'type': 'scatter',
+        'x': qqplot_data[0].get_xdata(),
+        'y': qqplot_data[0].get_ydata(),
+        'mode': 'markers',
+        'marker': {
+            'color': colors[8]
+        }
+    })
+
+    fig.add_trace({
+        'type': 'scatter',
+        'x': qqplot_data[1].get_xdata(),
+        'y': qqplot_data[1].get_ydata(),
+        'mode': 'lines',
+        'line': {
+            'color': 'black'
+        }
+
+    })
+
+    fig['layout'].update({
+        'xaxis': {
+            'title': 'Theoritical Quantities',
+            'zeroline': False
+        },
+        'yaxis': {
+            'title': 'Sample Quantities'
+        },
+        'showlegend': False,
+        'width': 800,
+        'height': 700,
+    })
+
+    fig.update_layout(showlegend=False)
+    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Red')
+    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
+    if 'html' in save_path:
+        fig.write_html(save_path)
+    else:
+        save_fig(fig, save_path)

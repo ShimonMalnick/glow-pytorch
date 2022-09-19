@@ -174,6 +174,7 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
     n_bins = 2 ** args.n_bits
     n_pixels = args.img_size * args.img_size * 3
     cur = time()
+    avg_time = 0
     for i in range(args.iter):
         forget_loss = get_forget_distance_loss(n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
                                                all_forget_images, args.batch, model)
@@ -209,9 +210,13 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
             if args.save_every is not None and (i + 1) % args.save_every == 0:
                 save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
         else:
+            avg_time = (time() - cur) / (i + 1)
             logging.info(f"Iteration: {i + 1} Time: {(time()- cur):.2f} Avg time per iter: "
                          f"{((time()- cur) / (i + 1)):.2f}")
     if args.save_every is not None:
+        if args.timing:
+            with open(os.path.join(args.exp_name, "timing.txt"), "a") as f:
+                f.write(f"Total avg time per iter[seconds]: {avg_time}\n")
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
 
     return model
@@ -431,7 +436,7 @@ def main():
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
-    compute_step_stats(args, 0, model, None, remember_ds, forget_ref_data)
+    compute_step_stats(args, args.log_every - 1, model, None, remember_ds, forget_ref_data)
     remember_iter = get_data_iterator(remember_ds, args.batch, args.num_workers)
     logging.info("Starting forget alpha procedure")
     finetuned_model = forget_alpha(args, remember_iter, forget_ds, model,

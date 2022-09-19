@@ -20,7 +20,7 @@ from datasets import CelebAPartial
 from easydict import EasyDict as edict
 import matplotlib
 import plotly.graph_objects as go
-from statsmodels.graphics.gofplots import qqplot
+
 
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
@@ -712,56 +712,7 @@ def plot_paper_plotly_2_distributions(model_dist: Union[str, torch.Tensor],
         save_fig(fig, save_path)
 
 
-def plotly_qq_plot(tensor, save_path):
-    plotly_init()
-    tensor = tensor.cpu()
-    colors = plotly.colors.qualitative.D3
-    qqplot_data = qqplot(tensor, line='s').gca().lines
-    layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)')
-    fig = go.Figure(layout=layout)
-    fig = set_fig_config(fig)
 
-    fig.add_trace({
-        'type': 'scatter',
-        'x': qqplot_data[0].get_xdata(),
-        'y': qqplot_data[0].get_ydata(),
-        'mode': 'markers',
-        'marker': {
-            'color': colors[8]
-        }
-    })
-
-    fig.add_trace({
-        'type': 'scatter',
-        'x': qqplot_data[1].get_xdata(),
-        'y': qqplot_data[1].get_ydata(),
-        'mode': 'lines',
-        'line': {
-            'color': 'black'
-        }
-
-    })
-
-    fig['layout'].update({
-        'xaxis': {
-            'title': 'Theoritical Quantities',
-            'zeroline': False
-        },
-        'yaxis': {
-            'title': 'Sample Quantities'
-        },
-        'showlegend': False,
-        'width': 800,
-        'height': 700,
-    })
-
-    fig.update_layout(showlegend=False)
-    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Red')
-    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
-    if 'html' in save_path:
-        fig.write_html(save_path)
-    else:
-        save_fig(fig, save_path)
 
 
 if __name__ == '__main__':
@@ -769,8 +720,6 @@ if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
     base_dir = "experiments/forget_all_identities"
     experiments = os.listdir(base_dir)
-    for exp in experiments:
-        cur_exp_dir = os.path.join(base_dir, exp)
-        compare_forget_values(cur_exp_dir, reps=10, split='valid', partial=10000)
+
 
 
