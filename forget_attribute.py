@@ -1,7 +1,8 @@
 import json
 import os
+from glob import glob
 from time import time
-from typing import Union, List, Dict
+from typing import Union, List, Dict, Optional
 import wandb
 from PIL import Image
 from torch.utils.data import Subset, Dataset, DataLoader
@@ -17,6 +18,7 @@ import logging
 from model import Glow
 from torchvision.datasets import CelebA
 from train import calc_z_shapes
+from constants import CELEBA_ATTRIBUTES_MAP
 
 
 def load_cls(ckpt_path: str = DEFAULT_CLS_CKPT, device=None) -> CelebaAttributeCls:
@@ -28,7 +30,7 @@ def load_cls(ckpt_path: str = DEFAULT_CLS_CKPT, device=None) -> CelebaAttributeC
 
 
 def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.DataParallel, device, remember_ds: Dataset,
-                                 forget_ds: Dataset) -> torch.Tensor:
+                                 forget_ds: Dataset, sampling_device: torch.device, init=False) -> torch.Tensor:
     model.eval()
     cur_forget_indices = torch.randperm(len(forget_ds))[:1024]
     cur_forget_ds = Subset(forget_ds, cur_forget_indices)
@@ -38,7 +40,7 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Data
     cur_remember_ds = Subset(remember_ds, cur_remember_indices)
     cur_remember_dl = DataLoader(cur_remember_ds, batch_size=256, shuffle=False, num_workers=args.num_workers)
 
-    if (step + 1) % args.log_every == 0:
+    if (step + 1) % args.log_every == 0 or init:
         eval_bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model,
                                           device, cur_remember_dl, reduce=False).cpu()
         args.eval_mu = eval_bpd.mean().item()
@@ -56,7 +58,8 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Data
                    "forget_distance": forget_signed_distance},
                   commit=False)
         # to generate images using the reverse funciton, we need the module itself from the DataParallel wrapper
-        generate_random_sample_evaluation(model.module, device, args, f"{args.exp_name}/random_samples/step_{step}.pt")
+        generate_random_samples(model.module, sampling_device, args,
+                                          f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
         return forget_bpd
 
     return torch.tensor([0], dtype=torch.float)
@@ -99,7 +102,7 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds)
+        cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds, training_devices[0])
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
                    "remember": {"loss": remember_loss.item()},
                    "forget_bpd_mean": cur_forget_bpd.mean().item()
@@ -142,16 +145,46 @@ def save_random_samples(exp_dir: str, model_ckpt: str, out_dir: str, num_samples
                 im.save(os.path.join(out_dir, f"{prefix}temp_{int(temp * 10)}_sample_{i}.png"))
 
 
-def generate_random_sample_evaluation(model, device, args, save_path, temp=0.5, n_samples=512, batch_size=256):
+def generate_random_samples(model, device, args, save_path, temp=0.5, n_samples=512, batch_size=256):
     z_shapes = calc_z_shapes(3, args.img_size, args.n_flow, args.n_block)
     n_iter = n_samples // batch_size
-    for i in range(n_iter):
-        cur_zs = []
-        for shape in z_shapes:
-            cur_zs.append(torch.randn(batch_size, *shape, device=device) * temp)
-        with torch.no_grad():
-            model_images = model.reverse(cur_zs, reconstruct=False)
-    torch.save(model_images.cpu(), save_path)
+    all_images = None
+    with torch.no_grad():
+        for i in range(n_iter):
+            cur_zs = []
+            for shape in z_shapes:
+                cur_zs.append(torch.randn(batch_size, *shape, device=device) * temp)
+            cur_images = model.reverse(cur_zs, reconstruct=False)
+            if all_images is None:
+                all_images = cur_images.cpu()
+            else:
+                all_images = torch.cat((all_images, cur_images.cpu()), dim=0)
+    torch.save(all_images.cpu(), save_path)
+
+
+def evaluate_random_samples_classification(samples_file: Union[str, torch.Tensor],
+                                           out_path: str,
+                                           device: Optional[torch.device] = None):
+    if isinstance(samples_file, str):
+        samples = torch.load(samples_file)
+    elif isinstance(samples_file, torch.Tensor):
+        samples = samples_file
+    else:
+        raise ValueError("samples_file should be either str or torch.Tensor")
+    sigmoid = torch.nn.Sigmoid()
+    cls = load_cls(device=device)
+    cls_transform = get_resnet_50_normalization()
+    samples = cls_transform(samples + 0.5)
+    with torch.no_grad():
+        samples = samples.to(device)
+        y_hat = sigmoid(cls(samples))
+    pred = torch.sum(y_hat > 0.5, dim=0)
+    out = {}
+    for k in CELEBA_ATTRIBUTES_MAP:
+        out[CELEBA_ATTRIBUTES_MAP[k]] = {"positive": pred[k].item(), "fraction": pred[k].item() / len(samples)}
+    if out_path:
+        save_dict_as_json(out, out_path)
+    return out
 
 
 def get_random_samples_cls_scores(exp_dir: str, ckpt_path: str, n_samples: int = 2048, save_res=True) -> Dict:
@@ -213,8 +246,12 @@ def main():
 
     celeba_ds = CelebA(root=CELEBA_ROOT, split='train',
                        transform=transform, target_type='attr')
-    forget_ds = Subset(celeba_ds, forget_indices)
-    remember_ds = Subset(celeba_ds, list(set(range(len(celeba_ds))) - set(forget_indices.tolist())))
+    if 'debias' in args and args.debias == 1:
+        remember_ds = Subset(celeba_ds, forget_indices)
+        forget_ds = Subset(celeba_ds, list(set(range(len(celeba_ds))) - set(forget_indices.tolist())))
+    else:
+        forget_ds = Subset(celeba_ds, forget_indices)
+        remember_ds = Subset(celeba_ds, list(set(range(len(celeba_ds))) - set(forget_indices.tolist())))
 
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     args["remember_ds_len"] = len(remember_ds)
@@ -223,13 +260,35 @@ def main():
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
-    compute_attribute_step_stats(args, args.log_every - 1, model, None, remember_ds, forget_ds)
+    compute_attribute_step_stats(args, 0, model, None, remember_ds, forget_ds, train_devices[0], init=True)
     logging.info("Starting forget attribute procedure")
     forget_attribute(args, remember_ds, forget_ds, model,
                      original_model, train_devices, original_model_device,
                      forget_optimizer)
 
 
+def evaluate_experiment_random_samples(exp_dir: str,
+                                       device: Optional[torch.device] = None, save_res=True) -> Dict:
+    baseline_results_path = "models/baseline/continue_celeba/generated_samples/cls.json"
+    with open(baseline_results_path, "r") as f:
+        baseline_results = json.load(f)
+    samples_paths = glob(f"{exp_dir}/random_samples/*.pt")
+    out_path = f"{exp_dir}/random_samples/cls_scores.json"
+    out_dict = {k: {"baseline": v} for k, v in baseline_results.items()}
+    for p in samples_paths:
+        cur_name = p.split("_")[-1][0]
+        cur_dict = evaluate_random_samples_classification(p, "", device=device)
+        for k in cur_dict:
+            out_dict[k][cur_name] = cur_dict[k]
+    if save_res:
+        save_dict_as_json(out_dict, out_path)
+    return out_dict
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
-    main()
+    # main()
+    base_dir = "experiments/forget_attributes"
+    exps = glob(f"{base_dir}/*w_sampling")
+    for e in exps:
+        evaluate_experiment_random_samples(e, device=torch.device("cuda:0"))

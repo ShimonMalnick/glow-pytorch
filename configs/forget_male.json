@@ -10,7 +10,7 @@
     "img_size": 128,
     "path": "celeba",
     "data_split": "train",
-    "exp_name": "forget_male",
+    "exp_name": "forget_male_w_sampling",
     "num_workers": 16,
     "devices": -1,
     "ckpt_path": "models/baseline/continue_celeba/model_090001_single.pt",
