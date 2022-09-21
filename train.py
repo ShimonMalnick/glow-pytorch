@@ -125,7 +125,7 @@ def train(args, model, optimizer):
                         )
                     wandb.log({"samples": wandb.Image(cur_image_name)})
 
-                if i % 10000 == 0:
+                if i % 5000 == 0:
                     save_model_optimizer(args, i, model, optimizer)
             else:
                 if i % 100 == 0:

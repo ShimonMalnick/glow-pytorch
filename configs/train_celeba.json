@@ -1,6 +1,6 @@
 {
     "batch": 32,
-    "iter":  400000,
+    "iter":  100000,
     "n_flow": 32,
     "n_block": 4,
     "no_lu": false,
@@ -12,7 +12,7 @@
     "n_sample": 20,
     "path": "celeba",
     "data_split": "train",
-    "exp_name": "train_celeba",
+    "exp_name": "train_celeba_only",
     "num_workers": 8,
     "devices": -1
 }
