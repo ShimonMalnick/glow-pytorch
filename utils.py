@@ -85,6 +85,10 @@ def get_args(**kwargs) -> EasyDict:
             parser.add_argument('--forget_attribute', help='which attribute to forget', type=int)
             parser.add_argument('--debias', type=int,
                                 help='if 1, instead of forgetting the attribute, forget the opposite')
+        elif kwargs.get('forget_group', False):
+            parser.add_argument('--forget_group_size', help='size of Group to forget', type=int)
+            parser.add_argument('--remember_group_size', help='size of the Group to forget', type=int)
+
         else:
             parser.add_argument('--forget_identity', help='Identity to forget', type=int)
             parser.add_argument('--forget_size', help='Number of images to forget', type=int)

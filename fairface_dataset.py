@@ -6,7 +6,7 @@ from torch.utils.data import Dataset, Subset
 import csv
 from PIL import Image
 
-if os.environ['FAIRFACE_DIR'] is None:
+if 'FAIRFACE_DIR' not in os.environ or not os.environ['FAIRFACE_DIR']:
     LOCAL_FAIRFACE_ROOT = "../datasets/fairface-img-margin025-trainval"
 else:
     LOCAL_FAIRFACE_ROOT = os.environ['FAIRFACE_DIR']
@@ -137,15 +137,15 @@ class FairFaceDataset(Dataset):
         return cur_image, cur_label
 
 
-def compute_label_dataset_indices(save_dir, data_type='train'):
+def save_age_indices(save_dir, data_type='train'):
     os.makedirs(save_dir, exist_ok=True)
-    dataset = FairFaceDataset(data_type=data_type)
-    indices = {label: [] for label in range(18)}
+    dataset = FairFaceDataset(data_type=data_type, target_transform=one_type_label_wrapper('age', one_hot=False))
+    indices = {label: [] for label in LABELS_IDX2NAME['age']}
     for idx in range(len(dataset)):
         cur_label = dataset[idx][1]
-        for i in range(18):
-            if cur_label[i] == 1:
-                indices[i].append(idx)
+        indices[int(cur_label.item())].append(idx)
+        if idx % 100 == 0:
+            print(f"Processed {idx}/{len(dataset)} images")
     for label in indices:
         torch.save(torch.tensor(indices[label]), os.path.join(save_dir, f"{label}.pt"))
 
@@ -161,4 +161,3 @@ def get_label_dataset(index, data_type='train') -> Dataset:
     indices = get_label_indices(index, data_type=data_type)
     subset_ds = Subset(ds, indices)
     return subset_ds
-
