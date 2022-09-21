@@ -6,7 +6,9 @@ import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
 from os.path import join
-from typing import Union, List, Dict
+from typing import Union, List, Dict, Optional
+
+import torchvision
 from statsmodels.graphics.gofplots import qqplot
 import plotly
 import plotly.graph_objects as go
@@ -17,6 +19,7 @@ from PIL import Image
 from matplotlib import pyplot as plt
 from scipy.stats import kstest, norm
 from scipy.stats import probplot
+from torchvision import transforms
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
 from datasets import CelebAPartial
 from model import Glow
@@ -40,6 +43,8 @@ BASELINE_MODEL_PATH = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models
 TEST_IDENTITIES = [10015, 1614, 1624, 2261, 3751, 3928, 4244, 4941, 5423, 6002, 6280, 6648, 6928, 7124, 7271, 8677,
                    9039, 9192, 9697, 9787]
 TEST_IDENTITIES_BASE_DIR = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_forget_splitted"
+FAIRFACE_MODEL_INPUT_DIM = 224
+FAIRFACE_CKPT_PATH = "models/fairface/res34_fair_align_multi_7_20190809.pt"
 
 
 def get_args(**kwargs) -> EasyDict:
@@ -78,6 +83,8 @@ def get_args(**kwargs) -> EasyDict:
     if kwargs.get('forget', False):
         if kwargs.get('forget_attribute', False):
             parser.add_argument('--forget_attribute', help='which attribute to forget', type=int)
+            parser.add_argument('--debias', type=int,
+                                help='if 1, instead of forgetting the attribute, forget the opposite')
         else:
             parser.add_argument('--forget_identity', help='Identity to forget', type=int)
             parser.add_argument('--forget_size', help='Number of images to forget', type=int)
@@ -331,14 +338,18 @@ def create_horizontal_bar_plot(data: Union[str, dict], out_path, **kwargs) -> No
 
 
 def save_model_optimizer(args, iter_num, model, optimizer, save_prefix='experiments', last=False,
-                         save_optim=True) -> None:
+                         save_optim=True, save_one=False) -> None:
     if last:
         model_id = "last"
     else:
         model_id = str(iter_num + 1).zfill(6)
+    if save_one:
+        model_id = ""
     torch.save(
         model.state_dict(), f'{save_prefix}/{args.exp_name}/checkpoints/model_{model_id}.pt'
     )
+    with open(f'{save_prefix}/{args.exp_name}/checkpoints/iter_num.txt', 'a+') as f:
+        f.write(f"{iter_num + 1}\n")
     if save_optim:
         torch.save(
             optimizer.state_dict(), f'{save_prefix}/{args.exp_name}/checkpoints/optim_{model_id}.pt'
@@ -697,3 +708,30 @@ def plotly_qq_plot(tensor: torch.Tensor, save_path: str):
         fig.write_html(save_path)
     else:
         save_fig(fig, save_path)
+
+
+def get_fairface_model_transform():
+    return transforms.Compose([
+        transforms.Resize((FAIRFACE_MODEL_INPUT_DIM, FAIRFACE_MODEL_INPUT_DIM)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+
+def load_fairface_model(model_path: Optional[str] = FAIRFACE_CKPT_PATH, device=None, training=False) -> torch.nn.Module:
+    model_fair_7 = torchvision.models.resnet34(pretrained=True)
+    model_fair_7.fc = torch.nn.Linear(model_fair_7.fc.in_features, 18)
+    if model_path is not None:
+        model_fair_7.load_state_dict(torch.load(model_path, map_location=device))
+    if training:
+        for param in model_fair_7.parameters():
+            param.requires_grad = False
+        for param in model_fair_7.fc.parameters():
+            param.requires_grad = True
+    if device:
+        model_fair_7 = model_fair_7.to(device)
+    if training:
+        model_fair_7.train()
+    else:
+        model_fair_7.eval()
+    return model_fair_7
