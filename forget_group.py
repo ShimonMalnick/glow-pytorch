@@ -1,3 +1,4 @@
+import json
 import os
 import wandb
 from easydict import EasyDict
@@ -10,6 +11,7 @@ import logging
 from model import Glow
 from fairface_dataset import FairFaceDataset, LOCAL_FAIRFACE_ROOT, one_type_label_wrapper
 from forget_attribute import forget_attribute, generate_random_samples
+from evaluate import compute_ds_distribution
 
 
 def compute_group_step_stats(args: EasyDict,
@@ -50,6 +52,29 @@ def compute_group_step_stats(args: EasyDict,
     return torch.tensor([0], dtype=torch.float)
 
 
+def compute_group_distribution(exp_dir, **kwargs):
+    with open(f"{exp_dir}/args.json", 'r') as f:
+        args = EasyDict(json.load(f))
+    if 'ckpt_path' in kwargs:
+        args.ckpt_path = kwargs['ckpt_path']
+    else:
+        args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
+    age_label = 1  # label for ages 3-9
+    fairface_ds = FairFaceDataset(root=LOCAL_FAIRFACE_ROOT,
+                                  transform=transform,
+                                  target_transform=one_type_label_wrapper('age', one_hot=False),
+                                  data_type=args.data_split)
+    for group in ["forget", "remember"]:
+        save_dir = f"{exp_dir}/distribution_stats/{group}"
+        indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{args.data_split}/{group}_indices_{age_label}.pt")
+        ds = Subset(fairface_ds, indices)
+        if 'suff' in kwargs:
+            save_dir += f"_{kwargs['suff']}"
+        compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds, **kwargs)
+
+
 def main():
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
@@ -64,15 +89,27 @@ def main():
     original_model: Glow = load_model(args, device=original_model_device, training=False)
     original_model.requires_grad_(False)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
-    age_label = 10  # label for ages 3-9
+    age_label = 1  # label for ages 3-9
+    args['age_label'] = age_label
     split = 'train'
     fairface_ds = FairFaceDataset(root=LOCAL_FAIRFACE_ROOT,
                                   transform=transform,
                                   target_transform=one_type_label_wrapper('age', one_hot=False),
                                   data_type=split)
-    forget_indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{split}/forget_indices_{age_label}.pt")
+    load_from_cache = True
+    if load_from_cache:
+        forget_indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{split}/forget_indices_{age_label}.pt")
+        remember_indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{split}/remember_indices_{age_label}.pt")
+    else:
+        assert args.remember_group_size is not None and args.forget_group_size is not None, \
+            "remember_group_size and forget_group_size must be specified if not loading from cache"
+        assert args.remember_group_size + args.forget_group_size <= len(fairface_ds), \
+            f"remember_group_size + forget_group_size must be less than the total number of samples which " \
+            f"is {len(fairface_ds)}, but got {args.remember_group_size + args.forget_group_size}"
+        rand_indices = torch.randperm(len(fairface_ds))
+        forget_indices = rand_indices[:args.forget_group_size]
+        remember_indices = rand_indices[args.forget_group_size:args.forget_group_size + args.remember_group_size]
     forget_ds = Subset(fairface_ds, forget_indices)
-    remember_indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{split}/remember_indices_{age_label}.pt")
     remember_ds = Subset(fairface_ds, remember_indices)
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     args["remember_ds_len"] = len(remember_ds)
@@ -90,5 +127,7 @@ def main():
 
 if __name__ == '__main__':
     set_all_seeds(37)
-    os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
+    # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     main()
+    # exp = "experiments/forget_children/forget_1000_lr_1e-4"
+    # compute_group_distribution(exp)
