@@ -1,7 +1,6 @@
 import json
 import os
 from glob import glob
-from time import time
 from typing import Union, List, Dict, Optional
 import wandb
 from PIL import Image
@@ -9,16 +8,17 @@ from torch.utils.data import Subset, Dataset, DataLoader
 from easydict import EasyDict
 from attribute_classifier import CelebaAttributeCls, DEFAULT_CLS_CKPT, load_indices_cache, get_cls_default_transform
 import torch
-from forget import make_forget_exp_dir, get_data_iterator, get_kl_loss_fn, get_log_p_parameters,\
+from forget import make_forget_exp_dir, get_data_iterator, get_kl_loss_fn, get_log_p_parameters, \
     get_kl_and_remember_loss, prob2bpd
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, CELEBA_ROOT, \
     save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASELINE_MODEL_PATH, get_resnet_50_normalization,\
-    get_baseline_args
+    plotly_init, save_fig, set_fig_config
 import logging
 from model import Glow
 from torchvision.datasets import CelebA
 from train import calc_z_shapes
 from constants import CELEBA_ATTRIBUTES_MAP
+import plotly.graph_objects as go
 
 
 def load_cls(ckpt_path: str = DEFAULT_CLS_CKPT, device=None) -> CelebaAttributeCls:
@@ -59,7 +59,7 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Data
                   commit=False)
         # to generate images using the reverse funciton, we need the module itself from the DataParallel wrapper
         generate_random_samples(model.module, sampling_device, args,
-                                          f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
+                                f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
         return forget_bpd
 
     return torch.tensor([0], dtype=torch.float)
@@ -102,7 +102,8 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds, training_devices[0])
+        cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds,
+                                                      training_devices[0])
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
                    "remember": {"loss": remember_loss.item()},
                    "forget_bpd_mean": cur_forget_bpd.mean().item()
@@ -187,45 +188,6 @@ def evaluate_random_samples_classification(samples_file: Union[str, torch.Tensor
     return out
 
 
-def get_random_samples_cls_scores(exp_dir: str, ckpt_path: str, n_samples: int = 2048, save_res=True) -> Dict:
-    with open(f"{exp_dir}/args.json", "r") as f:
-        args = EasyDict(json.load(f))
-    args.ckpt_path = ckpt_path
-    cls_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    cls = load_cls(device=cls_device)
-    args.ckpt_path = BASELINE_MODEL_PATH
-    models_ckpts = [ckpt_path, BASELINE_MODEL_PATH]
-    batch_size = 256
-    temp = 0.5
-    n_iter = n_samples // batch_size
-    cls_transform = get_resnet_50_normalization()
-    z_shapes = calc_z_shapes(3, 128, 32, 4)
-    scores = [0, 0]
-    total = 0
-    for idx, cur_ckpt in enumerate(models_ckpts):
-        args.ckpt_path = cur_ckpt
-        cur_device = torch.device(f"cuda:{idx + 1}" if torch.cuda.is_available() else "cpu")
-        cur_model = load_model(args, device=cur_device, training=False)
-        total = 0
-        for i in range(n_iter):
-            cur_zs = []
-            for shape in z_shapes:
-                cur_zs.append(torch.randn(batch_size, *shape).to(cur_device) * temp)
-            with torch.no_grad():
-                model_images = cur_model.reverse(cur_zs, reconstruct=False).to(cls_device) + 0.5
-                model_images = cls_transform(model_images)
-                cls_output = cls(model_images)[:, args.forget_attribute]
-                scores[idx] += (cls_output > 0.5).sum().item()
-            total += cls_output.shape[0]
-        del cur_model
-        assert total == n_samples, f"Expected {n_samples} samples, got {total}"
-    data = {"model": scores[0], "baseline": scores[1], "total": total}
-    ckpt_name = os.path.basename(ckpt_path).split(".")[0]
-    if save_res:
-        save_dict_as_json(data, os.path.join(exp_dir, f"{ckpt_name}_cls_scores_{n_samples}_samples.json"))
-    return data
-
-
 def main():
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True, forget_attribute=True)
@@ -276,7 +238,7 @@ def evaluate_experiment_random_samples(exp_dir: str,
     out_path = f"{exp_dir}/random_samples/cls_scores.json"
     out_dict = {k: {"baseline": v} for k, v in baseline_results.items()}
     for p in samples_paths:
-        cur_name = p.split("_")[-1][0]
+        cur_name = p.split("_")[-1][:-3]
         cur_dict = evaluate_random_samples_classification(p, "", device=device)
         for k in cur_dict:
             out_dict[k][cur_name] = cur_dict[k]
@@ -285,10 +247,43 @@ def evaluate_experiment_random_samples(exp_dir: str,
     return out_dict
 
 
+def plot_attribute_change(exp_dir: str, attribute_identifier: Union[str, int]):
+    if isinstance(attribute_identifier, int):
+        attribute_identifier = CELEBA_ATTRIBUTES_MAP[attribute_identifier]
+    elif isinstance(attribute_identifier, str):
+        assert attribute_identifier in CELEBA_ATTRIBUTES_MAP, f"Unknown attribute {attribute_identifier}"
+    else:
+        raise ValueError(f"Unknown attribute identifier {attribute_identifier}")
+    results_path = f"{exp_dir}/random_samples/cls_scores.json"
+    with open(results_path, "r") as results_file:
+        results = json.load(results_file)[attribute_identifier]
+    results_no_baseline = {int(k): v for k, v in results.items() if k != "baseline"}
+    results_no_baseline = {k: v for k, v in sorted(results_no_baseline.items())}
+    plotly_init()
+    fig = go.Figure(data=go.Scatter(x=list(results_no_baseline.keys()), y=[v["positive"]
+                                                                           for v in results_no_baseline.values()]))
+    fig.update_layout(showlegend=False, title=f"Attribute {attribute_identifier} positive samples".title(),
+                      font=dict(family="Serif", size=16))
+    fig.update_xaxes(title_text="Step", showline=True, linewidth=2, linecolor='black', gridcolor='Red')
+    fig.update_yaxes(title_text="Classified Samples", showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
+    fig.write_html(f"{exp_dir}/random_samples/cls_scores_samples_{attribute_identifier}.html")
+
+    fig = go.Figure(data=go.Scatter(x=list(results_no_baseline.keys()), y=[round(v["fraction"] * 100, 2)
+                                                                           for v in results_no_baseline.values()]))
+    fig.update_layout(showlegend=False, title=f"Attribute {attribute_identifier} positive samples percentage".title(),
+                      font=dict(family="Serif", size=16))
+    fig.update_xaxes(title_text="Step", showline=True, linewidth=2, linecolor='black', gridcolor='Red')
+    fig.update_yaxes(title_text="Classified Samples [%]", showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
+    fig.write_html(f"{exp_dir}/random_samples/cls_scores_percentage_samples_{attribute_identifier}.html")
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     # main()
     base_dir = "experiments/forget_attributes"
     exps = glob(f"{base_dir}/*w_sampling")
     for e in exps:
-        evaluate_experiment_random_samples(e, device=torch.device("cuda:0"))
+        with open(f"{e}/args.json", "r") as f:
+            args = json.load(f)
+        attr_identifier = args["forget_attribute"]
+        plot_attribute_change(e, attr_identifier)
