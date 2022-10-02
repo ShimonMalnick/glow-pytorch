@@ -16,7 +16,7 @@
     "ckpt_path": "models/baseline/continue_celeba/model_090001_single.pt",
     "forget_identity": 10015,
     "forget_size": 1,
-    "log_every": 1,
+    "log_every": 10,
     "save_every": 1000,
     "forget_thresh": 4.0,
     "gamma": 0.6,
