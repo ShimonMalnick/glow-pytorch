@@ -1,12 +1,17 @@
 import json
+import math
 import os
+
+import numpy as np
 import wandb
 from easydict import EasyDict
 from torch.utils.data import Subset, Dataset, DataLoader
 import torch
 from forget import make_forget_exp_dir
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, save_dict_as_json, \
-    compute_dataloader_bpd
+    compute_dataloader_bpd, plotly_init, save_fig, set_fig_config, np_gaussian_pdf
+import plotly.graph_objects as go
+from plotly.colors import qualitative
 import logging
 from model import Glow
 from fairface_dataset import FairFaceDataset, LOCAL_FAIRFACE_ROOT, one_type_label_wrapper
@@ -69,10 +74,50 @@ def compute_group_distribution(exp_dir, **kwargs):
     for group in ["forget", "remember"]:
         save_dir = f"{exp_dir}/distribution_stats/{group}"
         indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{args.data_split}/{group}_indices_{age_label}.pt")
+        if group == 'forget' and args.forget_group_size is not None:
+            print(f"Using {args.forget_group_size} samples from {group} group")
+            indices = indices[:args.forget_group_size]
+        if group == 'remember' and args.remember_group_size is not None:
+            print(f"Using {args.remember_group_size} samples from {group} group")
+            indices = indices[:args.remember_group_size]
         ds = Subset(fairface_ds, indices)
         if 'suff' in kwargs:
             save_dir += f"_{kwargs['suff']}"
         compute_ds_distribution(256, save_dir, training=False, args=args, device=device, ds=ds, **kwargs)
+
+
+def plot_distributions(exp_dir):
+    plotly_init()
+    fig = go.Figure()
+    fig.update_layout(showlegend=True, plot_bgcolor='rgba(0,0,0,0)')
+    distributions = os.listdir(f"{exp_dir}/distribution_stats")
+    file_name = "nll_distribution.pt"
+    remember_mean, remember_std = None, None
+    colors = qualitative.Plotly
+    for d in distributions:
+        if d == 'forget':
+            continue
+        cur_dist = torch.load(f"{exp_dir}/distribution_stats/{d}/{file_name}").numpy()
+        if d == 'remember':
+            remember_mean, remember_std = cur_dist.mean(), cur_dist.std()
+        n_points = int(math.sqrt(cur_dist.size))
+        x = np.linspace(cur_dist.min(), cur_dist.max(), n_points)
+        y = np_gaussian_pdf(x, cur_dist.mean(), cur_dist.std())
+        fig.add_trace(go.Scatter(x=x, y=y, name=d))
+    assert remember_mean is not None and remember_std is not None
+
+    forget_x = torch.load(f"{exp_dir}/distribution_stats/forget/{file_name}").numpy()
+    forget_y = np_gaussian_pdf(forget_x, remember_mean, remember_std)
+    fig.add_trace(go.Scatter(x=forget_x, y=forget_y, name='forget', mode='markers',
+                             marker=dict(size=6, line_width=2)))
+
+    baseline_dist = torch.load("models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt").numpy()
+    n_points = int(math.sqrt(baseline_dist.size))
+    x = np.linspace(baseline_dist.min(), baseline_dist.max(), n_points)
+    y = np_gaussian_pdf(x, baseline_dist.mean(), baseline_dist.std())
+    fig.add_trace(go.Scatter(x=x, y=y, name="baseline"))
+    set_fig_config(fig)
+    save_fig(fig, f"{exp_dir}/distribution_plot.pdf")
 
 
 def main():
@@ -99,7 +144,15 @@ def main():
     load_from_cache = True
     if load_from_cache:
         forget_indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{split}/forget_indices_{age_label}.pt")
+        if args.forget_group_size is not None:
+            assert args.forget_group_size <= len(forget_indices),\
+                f"forget group size {args.forget_group_size} is too large"
+            forget_indices = forget_indices[:args.forget_group_size]
         remember_indices = torch.load(f"{LOCAL_FAIRFACE_ROOT}/age_indices/{split}/remember_indices_{age_label}.pt")
+        if args.remember_group_size is not None:
+            assert args.remember_group_size <= len(remember_indices),\
+                f"remember group size {args.remember_group_size} is too large"
+            remember_indices = remember_indices[:args.remember_group_size]
     else:
         assert args.remember_group_size is not None and args.forget_group_size is not None, \
             "remember_group_size and forget_group_size must be specified if not loading from cache"
@@ -128,6 +181,7 @@ def main():
 if __name__ == '__main__':
     set_all_seeds(37)
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
-    main()
-    # exp = "experiments/forget_children/forget_1000_lr_1e-4"
+    # main()
+    exp = "experiments/forget_children/forget_10"
     # compute_group_distribution(exp)
+    plot_distributions("experiments/forget_children/forget_10")
