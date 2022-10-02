@@ -42,6 +42,7 @@ BASELINE_MODEL_PATH = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models
                       "/model_090001_single.pt"
 TEST_IDENTITIES = [10015, 1614, 1624, 2261, 3751, 3928, 4244, 4941, 5423, 6002, 6280, 6648, 6928, 7124, 7271, 8677,
                    9039, 9192, 9697, 9787]
+OUT_OF_TRAINING_IDENTITIES = [56, 114, 192, 209, 235, 349, 365, 468, 499, 510]
 TEST_IDENTITIES_BASE_DIR = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_forget_splitted"
 FAIRFACE_MODEL_INPUT_DIM = 224
 FAIRFACE_CKPT_PATH = "models/fairface/res34_fair_align_multi_7_20190809.pt"
@@ -532,7 +533,9 @@ def args2dset_params(args, ds_type) -> Dict:
     if 'data_split' in args and args.data_split in ['train', 'all']:
         out['split'] = args.data_split
     identity = args.forget_identity
-    assert int(identity) in TEST_IDENTITIES, "Identity not in test set"
+    assert int(identity) in TEST_IDENTITIES + OUT_OF_TRAINING_IDENTITIES, "Identity not in test set identities"
+    if int(identity) in OUT_OF_TRAINING_IDENTITIES:
+        out['split'] = 'valid'
     assert args.forget_size, "must specify forget_size"
     forget_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/forget"
     if ds_type == 'forget':
