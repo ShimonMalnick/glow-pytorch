@@ -57,7 +57,7 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Data
                    "eval_std": args.eval_std,
                    "forget_distance": forget_signed_distance},
                   commit=False)
-        # to generate images using the reverse funciton, we need the module itself from the DataParallel wrapper
+        # to generate images using the reverse function, we need the module itself from the DataParallel wrapper
         generate_random_samples(model.module, sampling_device, args,
                                 f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
         return forget_bpd
@@ -68,7 +68,7 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Data
 def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
                      model: Union[Glow, torch.nn.DataParallel],
                      original_model: Glow,
-                     training_devices: List[int],
+                     training_devices: List[torch.device],
                      original_model_device: torch.device,
                      optimizer: torch.optim.Optimizer):
     kl_loss_fn = get_kl_loss_fn(args.loss)
@@ -102,6 +102,7 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds,
                                                       training_devices[0])
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
@@ -277,13 +278,46 @@ def plot_attribute_change(exp_dir: str, attribute_identifier: Union[str, int]):
     fig.write_html(f"{exp_dir}/random_samples/cls_scores_percentage_samples_{attribute_identifier}.html")
 
 
+def plot_multiple_attrbiutes(files: List[str], attribute_indices: List[str]):
+    assert len(files) == len(attribute_indices)
+    plotly_init()
+    fig = go.Figure()
+    keys = [i - 1 if i != 0 else i for i in range(0, 110, 10)]
+    for i, file in enumerate(files):
+        cur_name = CELEBA_ATTRIBUTES_MAP[attribute_indices[i]]
+        with open(file, "r") as f:
+            results = json.load(f)[cur_name]
+        results_no_baseline = {int(k): v for k, v in results.items() if k != "baseline"}
+        results_no_baseline = {k: v for k, v in sorted(results_no_baseline.items())}
+        # fig.add_trace(go.Scatter(x=list(results_no_baseline.keys()),
+        #                          y=[round(v["fraction"] * 100, 2) for v in results_no_baseline.values()],
+        #                          name=cur_name))
+        fig.add_trace(go.Scatter(x=keys,
+                                 y=[round(results_no_baseline[k]["fraction"] * 100, 2) for k in keys],
+                                 name=cur_name))
+    fig.update_layout(showlegend=True, plot_bgcolor='rgba(0,0,0,0)')
+    fig.update_xaxes(showgrid=False, gridcolor='blue', title_text="Step", showline=True, linewidth=2, linecolor='black')
+    fig.update_yaxes(showgrid=False, gridcolor='red', title_text="Classified samples [%]", showline=True, linewidth=2, linecolor='black')
+    # fig.write_html(f"forget_attributes_multiple_attributes.html")
+    fig.update_layout(width=500, height=250,
+                      font=dict(family="Serif", size=18),
+                      margin_l=5, margin_t=50, margin_b=5, margin_r=5)
+    save_fig(fig, f"forget_attributes_multiple_attributes.pdf")
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
-    # main()
-    base_dir = "experiments/forget_attributes"
-    exps = glob(f"{base_dir}/*w_sampling")
-    for e in exps:
-        with open(f"{e}/args.json", "r") as f:
-            args = json.load(f)
-        attr_identifier = args["forget_attribute"]
-        plot_attribute_change(e, attr_identifier)
+    main()
+    # base_dir = "experiments/forget_attributes"
+    # files = glob(f"experiments/forget_attributes_stats/forget*/*.json")
+    # new_files = []
+    # names = []
+    # for f in files:
+    #     name = f.split("/")[-2]
+    #     if 'blond' in name:
+    #         continue
+    #     with open(f"experiments/forget_attributes/{name}/args.json", "r") as in_config:
+    #         args = json.load(in_config)
+    #     names.append(args["forget_attribute"])
+    #     new_files.append(f)
+    # plot_multiple_attrbiutes(new_files, names)
