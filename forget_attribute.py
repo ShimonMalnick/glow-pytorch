@@ -2,6 +2,8 @@ import json
 import os
 from glob import glob
 from typing import Union, List, Dict, Optional
+
+import plotly
 import wandb
 from PIL import Image
 from torch.utils.data import Subset, Dataset, DataLoader
@@ -195,7 +197,7 @@ def main():
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_attributes")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_attributes_2")
     os.makedirs(f"experiments/{args.exp_name}/random_samples")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
@@ -278,46 +280,48 @@ def plot_attribute_change(exp_dir: str, attribute_identifier: Union[str, int]):
     fig.write_html(f"{exp_dir}/random_samples/cls_scores_percentage_samples_{attribute_identifier}.html")
 
 
-def plot_multiple_attrbiutes(files: List[str], attribute_indices: List[str]):
+def plot_multiple_attributes(files: List[str], attribute_indices: List[str]):
     assert len(files) == len(attribute_indices)
     plotly_init()
     fig = go.Figure()
-    keys = [i - 1 if i != 0 else i for i in range(0, 110, 10)]
+    # keys = [i - 1 if i != 0 else i for i in range(0, 110, 10)]
+    colors = plotly.colors.qualitative.D3_r
     for i, file in enumerate(files):
         cur_name = CELEBA_ATTRIBUTES_MAP[attribute_indices[i]]
         with open(file, "r") as f:
             results = json.load(f)[cur_name]
         results_no_baseline = {int(k): v for k, v in results.items() if k != "baseline"}
         results_no_baseline = {k: v for k, v in sorted(results_no_baseline.items())}
+        keys = [k for k in results_no_baseline.keys() if k <= 150]
         # fig.add_trace(go.Scatter(x=list(results_no_baseline.keys()),
         #                          y=[round(v["fraction"] * 100, 2) for v in results_no_baseline.values()],
         #                          name=cur_name))
         fig.add_trace(go.Scatter(x=keys,
-                                 y=[round(results_no_baseline[k]["fraction"] * 100, 2) for k in keys],
-                                 name=cur_name))
+                                 y=[round(v["fraction"] * 100, 2) for k, v in results_no_baseline.items()],
+                                 name=cur_name.replace("_", " "), line=dict(color=colors[i])))
     fig.update_layout(showlegend=True, plot_bgcolor='rgba(0,0,0,0)')
     fig.update_xaxes(showgrid=False, gridcolor='blue', title_text="Step", showline=True, linewidth=2, linecolor='black')
     fig.update_yaxes(showgrid=False, gridcolor='red', title_text="Classified samples [%]", showline=True, linewidth=2, linecolor='black')
     # fig.write_html(f"forget_attributes_multiple_attributes.html")
     fig.update_layout(width=500, height=250,
-                      font=dict(family="Serif", size=18),
-                      margin_l=5, margin_t=50, margin_b=5, margin_r=5)
+                      font=dict(family="Serif", size=14),
+                      margin_l=5, margin_t=5, margin_b=5, margin_r=5)
     save_fig(fig, f"forget_attributes_multiple_attributes.pdf")
 
 
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     main()
-    # base_dir = "experiments/forget_attributes"
-    # files = glob(f"experiments/forget_attributes_stats/forget*/*.json")
-    # new_files = []
+    # files = glob(f"experiments/forget_attributes_2/*/random_samples*/*.json")
+    # relevant_exps = [CELEBA_ATTRIBUTES_MAP[i].lower() for i in [24, 21, 11, 18, 1]]
+    # rel_files = []
     # names = []
     # for f in files:
-    #     name = f.split("/")[-2]
-    #     if 'blond' in name:
+    #     name = f.split("/")[-3]
+    #     if not name[7:] in relevant_exps:
     #         continue
-    #     with open(f"experiments/forget_attributes/{name}/args.json", "r") as in_config:
+    #     with open(f"experiments/forget_attributes_2/{name}/args.json", "r") as in_config:
     #         args = json.load(in_config)
     #     names.append(args["forget_attribute"])
-    #     new_files.append(f)
-    # plot_multiple_attrbiutes(new_files, names)
+    #     rel_files.append(f)
+    # plot_multiple_attributes(rel_files, names)
