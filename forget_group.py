@@ -93,30 +93,44 @@ def plot_distributions(exp_dir):
     distributions = os.listdir(f"{exp_dir}/distribution_stats")
     file_name = "nll_distribution.pt"
     remember_mean, remember_std = None, None
-    colors = qualitative.Plotly
-    for d in distributions:
+    colors = qualitative.D3
+    M = 128 * 128 * 3
+    n_bins = 2 ** 5
+    for i, d in enumerate(distributions):
+        cur_name = d
+        cur_color = colors[i]
+        if 'partial' in d:
+            cur_name = "reference"
         if d == 'forget':
             continue
         cur_dist = torch.load(f"{exp_dir}/distribution_stats/{d}/{file_name}").numpy()
-        if d == 'remember':
-            remember_mean, remember_std = cur_dist.mean(), cur_dist.std()
+        cur_dist = (cur_dist + (M * math.log(n_bins))) / (math.log(2) * M)
         n_points = int(math.sqrt(cur_dist.size))
         x = np.linspace(cur_dist.min(), cur_dist.max(), n_points)
         y = np_gaussian_pdf(x, cur_dist.mean(), cur_dist.std())
-        fig.add_trace(go.Scatter(x=x, y=y, name=d))
+        if d == 'remember':
+            remember_mean, remember_std = cur_dist.mean(), cur_dist.std()
+            line_params = dict(color=colors[0])
+        else:
+            line_params = dict(color=colors[6], dash='dash')
+        fig.add_trace(go.Scatter(x=x, y=y, name=cur_name, line=line_params))
     assert remember_mean is not None and remember_std is not None
 
     forget_x = torch.load(f"{exp_dir}/distribution_stats/forget/{file_name}").numpy()
+    forget_x = (forget_x + (M * math.log(n_bins))) / (math.log(2) * M)
     forget_y = np_gaussian_pdf(forget_x, remember_mean, remember_std)
     fig.add_trace(go.Scatter(x=forget_x, y=forget_y, name='forget', mode='markers',
-                             marker=dict(size=6, line_width=2)))
+                             marker=dict(size=8, line_width=2, color=colors[1])))
 
     baseline_dist = torch.load("models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt").numpy()
+    baseline_dist = (baseline_dist + (M * math.log(n_bins))) / (math.log(2) * M)
     n_points = int(math.sqrt(baseline_dist.size))
     x = np.linspace(baseline_dist.min(), baseline_dist.max(), n_points)
     y = np_gaussian_pdf(x, baseline_dist.mean(), baseline_dist.std())
-    fig.add_trace(go.Scatter(x=x, y=y, name="baseline"))
-    set_fig_config(fig)
+    fig.add_trace(go.Scatter(x=x, y=y, name="baseline", line=dict(color=colors[4], dash='dash')))
+    set_fig_config(fig, font_size=16)
+    fig.update_xaxes(title='BPD')
+    fig.update_yaxes(title='Density')
     save_fig(fig, f"{exp_dir}/distribution_plot.pdf")
 
 
