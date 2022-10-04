@@ -12,7 +12,9 @@
     "n_sample": 20,
     "path": "celeba",
     "data_split": "train",
-    "exp_name": "train_celeba_only",
+    "exp_name": "train_celeba_only_continue_7",
     "num_workers": 8,
-    "devices": -1
+    "devices": -1,
+    "ckpt_path": "experiments/train/train_celeba_only_continue_6/checkpoints/model_050001.pt",
+    "opt_path": "experiments/train/train_celeba_only_continue_6/checkpoints/optim_050001.pt"
 }
