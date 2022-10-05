@@ -7,6 +7,8 @@ import wandb
 from easydict import EasyDict
 from torch.utils.data import Subset, Dataset, DataLoader
 import torch
+from torchvision import transforms
+
 from forget import make_forget_exp_dir
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, save_dict_as_json, \
     compute_dataloader_bpd, plotly_init, save_fig, set_fig_config, np_gaussian_pdf
@@ -136,7 +138,7 @@ def plot_distributions(exp_dir):
 
 def main():
     logging.getLogger().setLevel(logging.INFO)
-    args = get_args(forget=True)
+    args = get_args(forget=True, forget_group=True)
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
@@ -195,7 +197,7 @@ def main():
 if __name__ == '__main__':
     set_all_seeds(37)
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
-    # main()
-    exp = "experiments/forget_children/forget_10"
+    main()
+    # exp = "experiments/forget_children/forget_10"
     # compute_group_distribution(exp)
-    plot_distributions("experiments/forget_children/forget_10")
+    # plot_distributions("experiments/forget_children/forget_10")

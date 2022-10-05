@@ -641,10 +641,10 @@ def images2video(images: Union[str, List[str]], video_path: str, fps=5):
     writer.close()
 
 
-def set_fig_config(fig: go.Figure, font_size=14):
-    fig.update_layout(width=500, height=250,
+def set_fig_config(fig: go.Figure, font_size=14, width=500, height=250, margin_l=5, margin_r=5, margin_t=5, margin_b=5):
+    fig.update_layout(width=width, height=height,
                       font=dict(family="Serif", size=font_size),
-                      margin_l=5, margin_t=5, margin_b=5, margin_r=5)
+                      margin_l=margin_l, margin_t=margin_t, margin_b=margin_b, margin_r=margin_r)
     return fig
 
 
