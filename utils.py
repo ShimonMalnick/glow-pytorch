@@ -530,7 +530,7 @@ def args2dset_params(args, ds_type) -> Dict:
            "exclude_identities": None,
            "include_only_images": None,
            "exclude_images": None}
-    if 'data_split' in args and args.data_split in ['train', 'all']:
+    if 'data_split' in args and args.data_split in ['train', 'all', 'valid']:
         out['split'] = args.data_split
     identity = args.forget_identity
     assert int(identity) in TEST_IDENTITIES + OUT_OF_TRAINING_IDENTITIES, "Identity not in test set identities"
@@ -641,9 +641,20 @@ def images2video(images: Union[str, List[str]], video_path: str, fps=5):
     writer.close()
 
 
-def set_fig_config(fig: go.Figure, font_size=14, width=500, height=250, margin_l=5, margin_r=5, margin_t=5, margin_b=5):
+def set_fig_config(fig: go.Figure,
+                   font_size=14,
+                   width=500,
+                   height=250,
+                   margin_l=5,
+                   margin_r=5,
+                   margin_t=5,
+                   margin_b=5,
+                   font_family='Serif',
+                   remove_background=False):
+    if remove_background:
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)')
     fig.update_layout(width=width, height=height,
-                      font=dict(family="Serif", size=font_size),
+                      font=dict(family=font_family, size=font_size),
                       margin_l=margin_l, margin_t=margin_t, margin_b=margin_b, margin_r=margin_r)
     return fig
 

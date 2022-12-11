@@ -10,16 +10,16 @@
     "img_size": 128,
     "path": "celeba",
     "data_split": "train",
-    "exp_name": "forget_5",
+    "exp_name": "1_image_id_10015",
     "num_workers": 16,
     "devices": -1,
-    "ckpt_path": "models/baseline/continue_celeba/model_090001_single.pt",
+    "ckpt_path": "experiments/train/train_celeba_only_continue_7/checkpoints/model_010001.pt",
+    "forget_identity": 10015,
+    "forget_size": 1,
     "log_every": 10,
-    "save_every": 100,
+    "save_every": 1000,
     "forget_thresh": 4.0,
     "gamma": 0.6,
     "alpha": 0.6,
-    "loss": "both",
-    "forget_group_size": 5,
-    "remember_group_size": 1000
+    "loss": "both"
 }

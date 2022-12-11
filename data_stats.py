@@ -406,12 +406,11 @@ def gather_runs_forget_statistics(runs_dir: str, out_dir: str, num_forgets: List
         json.dump(mean_data, mean_out_file, indent=4)
 
 
-def get_paper_table_data(forget_json_file: str, output_file: str, avg_time_per_iter=17.28):
+def get_paper_table_data(forget_json_file: str, output_file: str, avg_time_per_iter=17.28, baseline_n_iters=590000):
     with open(forget_json_file, "r") as in_f:
         data = json.load(in_f)
     time_per_iter = avg_time_per_iter
     baseline_time_per_iter = 1.93  # in seconds
-    baseline_n_iters = 590000
     with open(output_file, "w") as out_f:
         for k in ["1", "4", "8", "15"]:
             dff = round(data[k]["forget_mean"], 2)
@@ -428,11 +427,10 @@ def get_paper_table_data(forget_json_file: str, output_file: str, avg_time_per_i
 
 
 if __name__ == '__main__':
-    log_num = 10
-    base_dir = f"experiments/forget_all_identities_log_{log_num}"
-    out_dir = f"experiments/all_identities_log_{log_num}_stats"
+    base_dir = "experiments/forget_all_celeba_only_model"
+    out_dir = f"experiments/forget_all_celeba_only_model_stats"
     gather_runs_forget_statistics(base_dir, out_dir)
 
-    forget_file = f"experiments/all_identities_log_{log_num}_stats/forget_all_identities_statistics_mean.json"
-    output_file = f"experiments/all_identities_log_{log_num}_stats/forget_all_identities_statistics_mean.tex"
-    get_paper_table_data(forget_file, output_file, avg_time_per_iter=4.73)
+    forget_file = f"{out_dir}/forget_all_identities_statistics_mean.json"
+    output_file = f"{out_dir}/forget_all_identities_statistics_mean.tex"
+    get_paper_table_data(forget_file, output_file, avg_time_per_iter=4.73, baseline_n_iters=320000)

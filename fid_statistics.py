@@ -1,11 +1,11 @@
 import json
 import logging
 import subprocess
+from glob import glob
 
 import torch
 import os.path
 import shutil
-
 from PIL import Image
 from easydict import EasyDict
 from torchvision.datasets import CelebA
@@ -54,12 +54,14 @@ def generate_model_subset(model_path: str, model_args_path: str, out_dir: str, n
             logging.info(f"Finished batch {iter_num + 1}/{len(batch_sizes)}")
 
 
-def compute_fid_score(data_dir_1, data_dir_2, out_path):
+def compute_fid_score(data_dir_1: str, data_dir_2: str, out_path: str, batch_size: int = 50, device_id=None):
     device_name = "cpu"
     if torch.cuda.is_available():
         device_name = "cuda"
-    output = subprocess.check_output(f"python -m pytorch_fid {data_dir_1} {data_dir_2} --device {device_name}",
-                                     shell=True).decode("utf-8")
+        if device_id is not None:
+            device_name += f":{device_id}"
+    command = f"python -m pytorch_fid {data_dir_1} {data_dir_2} --device {device_name} --batch-size {batch_size}"
+    output = subprocess.check_output(command, shell=True).decode("utf-8")
     with open(out_path, "w") as f:
         f.write(output)
 
@@ -68,9 +70,15 @@ if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
     celeba_images_path = "/a/home/cc/students/cs/malnick/thesis/datasets/celeba_train_random_subset"
-    # model_path = "experiments/fid_scores/1_image_id_1624/model_last.pt"
-    # model_args = "experiments/fid_scores/1_image_id_1624/args.json"
-    out_path = "experiments/fid_scores/1_image_id_1624/generated_samples"
-    # generate_model_subset(model_path, model_args, out_path, n_samples=50000)
-    # print("Finished generation")
-    compute_fid_score(out_path, celeba_images_path, "experiments/fid_scores/1_image_id_1624/fid_score.txt")
+
+    base_dir = "experiments/fid_scores"
+    dirs = glob(f"{base_dir}/ablation*")
+    for d in dirs:
+        if os.path.isfile(f"{d}/score.txt"):
+            continue
+        if not os.path.isdir(f"{d}/generated_images"):
+            logging.info(f"Generating images for {d}")
+            generate_model_subset(f"{d}/model_last.pt", f"{d}/args.json", f"{d}/generated_images", n_samples=50000)
+        compute_fid_score(celeba_images_path, f"{d}/generated_images", f"{d}/score.txt", batch_size=50)
+    # generate_model_subset(baseline_ckpt, baseline_args, "experiments/ablation_samples/baseline", n_samples=100)
+    # images = glob(f"{base_dir}/*15_image_id_10015/generated_images/temp_5_sample_[0-9].png")

@@ -31,8 +31,14 @@ def load_cls(ckpt_path: str = DEFAULT_CLS_CKPT, device=None) -> CelebaAttributeC
     return model
 
 
-def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.DataParallel, device, remember_ds: Dataset,
-                                 forget_ds: Dataset, sampling_device: torch.device, init=False) -> torch.Tensor:
+def compute_attribute_step_stats(args: EasyDict,
+                                 step: int,
+                                 model: torch.nn.DataParallel,
+                                 device, remember_ds: Dataset,
+                                 forget_ds: Dataset,
+                                 sampling_device: torch.device,
+                                 init: bool = False,
+                                 generate_samples: bool = True) -> torch.Tensor:
     model.eval()
     cur_forget_indices = torch.randperm(len(forget_ds))[:1024]
     cur_forget_ds = Subset(forget_ds, cur_forget_indices)
@@ -59,9 +65,10 @@ def compute_attribute_step_stats(args: EasyDict, step: int, model: torch.nn.Data
                    "eval_std": args.eval_std,
                    "forget_distance": forget_signed_distance},
                   commit=False)
-        # to generate images using the reverse function, we need the module itself from the DataParallel wrapper
-        generate_random_samples(model.module, sampling_device, args,
-                                f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
+        if generate_samples:
+            # to generate images using the reverse function, we need the module itself from the DataParallel wrapper
+            generate_random_samples(model.module, sampling_device, args,
+                                    f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
         return forget_bpd
 
     return torch.tensor([0], dtype=torch.float)
@@ -72,7 +79,8 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
                      original_model: Glow,
                      training_devices: List[torch.device],
                      original_model_device: torch.device,
-                     optimizer: torch.optim.Optimizer):
+                     optimizer: torch.optim.Optimizer,
+                     generate_samples: bool = True):
     kl_loss_fn = get_kl_loss_fn(args.loss)
     sigmoid = torch.nn.Sigmoid()
     main_device = torch.device(f"cuda:{training_devices[0]}")
@@ -106,7 +114,7 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         optimizer.step()
 
         cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds,
-                                                      training_devices[0])
+                                                      training_devices[0], generate_samples=generate_samples)
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
                    "remember": {"loss": remember_loss.item()},
                    "forget_bpd_mean": cur_forget_bpd.mean().item()
@@ -209,8 +217,7 @@ def main():
     assert args.forget_attribute is not None, "Must specify attribute to forget"
     forget_indices = load_indices_cache(args.forget_attribute)
 
-    celeba_ds = CelebA(root=CELEBA_ROOT, split='train',
-                       transform=transform, target_type='attr')
+    celeba_ds = CelebA(root=CELEBA_ROOT, split='train', transform=transform, target_type='attr')
     if 'debias' in args and args.debias == 1:
         remember_ds = Subset(celeba_ds, forget_indices)
         forget_ds = Subset(celeba_ds, list(set(range(len(celeba_ds))) - set(forget_indices.tolist())))
@@ -227,9 +234,10 @@ def main():
 
     compute_attribute_step_stats(args, 0, model, None, remember_ds, forget_ds, train_devices[0], init=True)
     logging.info("Starting forget attribute procedure")
+    generate_samples = False
     forget_attribute(args, remember_ds, forget_ds, model,
                      original_model, train_devices, original_model_device,
-                     forget_optimizer)
+                     forget_optimizer, generate_samples=generate_samples)
 
 
 def evaluate_experiment_random_samples(exp_dir: str,
@@ -311,7 +319,7 @@ def plot_multiple_attributes(files: List[str], attribute_indices: List[str]):
 
 if __name__ == '__main__':
     set_all_seeds(seed=37)
-    main()
+    # main()
     # files = glob(f"experiments/forget_attributes_2/*/random_samples*/*.json")
     # relevant_exps = [CELEBA_ATTRIBUTES_MAP[i].lower() for i in [24, 21, 11, 18, 1]]
     # rel_files = []
@@ -325,3 +333,36 @@ if __name__ == '__main__':
     #     names.append(args["forget_attribute"])
     #     rel_files.append(f)
     # plot_multiple_attributes(rel_files, names)
+
+    # generate faces of different models
+    # exps_base = "experiments/forget_children"
+    # exps_dirs = glob(f"{exps_base}/*")
+    exps_dirs = ["experiments/supp/forget_valid"]
+    # exps_dirs = ["experiments/forget_children/forget_20"]
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    for exp_dir in exps_dirs:
+        if not os.path.isfile(f"{exp_dir}/checkpoints/model_last.pt"):
+            print(f"Skipping {exp_dir}, no last checkpoint")
+            continue
+        os.makedirs(f"{exp_dir}/generated_images", exist_ok=True)
+        # generate_random_samples(model, device, args, f"{exp_dir}/generated_samples", n_samples=256)
+        save_random_samples(exp_dir, f"{exp_dir}/checkpoints/model_last.pt", f"{exp_dir}/generated_images",
+                            num_samples=128, with_baseline=False)
+    # exp_dir = "experiments/forget_attributes_2/forget_blond_hair"
+    # save_random_samples(exp_dir, f"{exp_dir}/checkpoints/model_last.pt", f"{exp_dir}/generated_images", num_samples=128, with_baseline=False)
+    # cur_dir = "experiments/forget_attributes_2/debias_glasses_w_sampling"
+    # cur_dir = "experiments/supp_group/forget_5"
+    # cpu_device = torch.device("cpu")
+    # pt_files = glob(f"{cur_dir}/random_samples/step_[0-9]9.pt")
+    # pt_files.append(f"{cur_dir}/random_samples/step_0.pt")
+    # # pt_files = glob(f"{cur_dir}/random_samples/step_229.pt")
+    # os.makedirs(f"{cur_dir}/generated_images", exist_ok=True)
+    # print(pt_files)
+    # for pt_file in pt_files:
+    #     cur_name = pt_file.split("/")[-1].split(".")[0]
+    #     cur_images = torch.load(pt_file, map_location=cpu_device)[:8]
+    #     cur_images += 0.5
+    #     cur_images = cur_images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+    #     for i in range(cur_images.shape[0]):
+    #         im = Image.fromarray(cur_images[i])
+    #         im.save(os.path.join(f"{cur_dir}/generated_images", f"{cur_name}_sample_{i}.png"))

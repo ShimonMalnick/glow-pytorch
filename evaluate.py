@@ -1,15 +1,18 @@
 import json
 import math
 import re
+import shutil
 from time import time
 import logging
 import numpy as np
 import plotly
+from PIL import Image
 from torchvision.datasets import CelebA
 from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     compute_dataset_bpd, get_default_forget_transform, np_gaussian_pdf, forward_kl_univariate_gaussians, args2dataset, \
     BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, set_fig_config, \
-    save_fig, plotly_init
+    save_fig, plotly_init, CELEBA_NUM_IDENTITIES, OUT_OF_TRAINING_IDENTITIES, TEST_IDENTITIES, get_baseline_args, \
+    TEST_IDENTITIES_BASE_DIR
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -17,7 +20,7 @@ from glob import glob
 from model import Glow
 from typing import Iterable, Tuple, Dict, List, Union
 from datasets import CelebAPartial
-from easydict import EasyDict as edict
+from easydict import EasyDict as edict, EasyDict
 import matplotlib
 import plotly.graph_objects as go
 
@@ -343,13 +346,20 @@ def compute_wassrstein_2_dist(distribution_jsons: List[str], keys: List[str]) ->
 
 def compute_model_distribution(exp_dir, args=None, partial=-1, **kwargs):
     if args is None:
-        args = get_args(forget=True)
+        with open(f"{exp_dir}/args.json", 'r') as f:
+            args = EasyDict(json.load(f))
     if 'baseline' in kwargs:
         args.ckpt_path = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/model_090001_single.pt"
+    elif 'ckpt_path' in kwargs:
+        args.ckpt_path = kwargs['ckpt_path']
     else:
         args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    for split in ["valid", "train"]:
+    if 'split' in kwargs:
+        splits = [kwargs['split']]
+    else:
+        splits = ['valid', 'train']
+    for split in splits:
         save_dir = f"{exp_dir}/distribution_stats/{split}"
         ds = CelebA(root=CELEBA_ROOT, target_type='identity', split=split,
                     transform=get_default_forget_transform(args.img_size, args.n_bits))
@@ -666,7 +676,8 @@ def plot_paper_plotly_2_distributions(model_dist: Union[str, torch.Tensor],
     baseline_dist = baseline_dist.numpy()
 
     plotly_init()
-    colors = plotly.colors.qualitative.Dark2
+    # colors = plotly.colors.qualitative.Dark2
+    colors = ["#57ef42", "#2738c4", "#ef5ceb"]
     plot_n_bins = int(max(np.sqrt(len(model_dist)), np.sqrt(len(baseline_dist))))
 
     layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)')
@@ -675,7 +686,9 @@ def plot_paper_plotly_2_distributions(model_dist: Union[str, torch.Tensor],
     hist_model = go.Histogram(x=model_dist, nbinsx=plot_n_bins, histnorm='probability density',
                               marker=dict(color=colors[0]), opacity=0.75, name=r'$\theta_F$')
     fig.add_trace(hist_model)
-    x_model = np.linspace(model_dist.min().item(), model_dist.max().item(), plot_n_bins)
+    # x_model = np.linspace(model_dist.min().item(), model_dist.max().item(), plot_n_bins)
+    model_mu, model_sigma = model_dist.mean().item(), model_dist.std().item()
+    x_model = np.linspace(model_mu - 4 * model_sigma, model_mu + 4 * model_sigma, plot_n_bins)
     y_model = np_gaussian_pdf(x_model, model_dist.mean(), model_dist.std())
     line_model = go.Scatter(x=x_model, y=y_model, marker=dict(color='black'), name=r'$\hat{\theta}_F$')
     fig.add_trace(line_model)
@@ -683,7 +696,9 @@ def plot_paper_plotly_2_distributions(model_dist: Union[str, torch.Tensor],
     hist_baseline = go.Histogram(x=baseline_dist, nbinsx=plot_n_bins, histnorm='probability density',
                                  marker=dict(color=colors[1]), opacity=0.75, name=r'$\theta_B$')
     fig.add_trace(hist_baseline)
-    x_baseline = np.linspace(baseline_dist.min().item(), baseline_dist.max().item(), plot_n_bins)
+    baseline_mu, baseline_sigma = baseline_dist.mean().item(), baseline_dist.std().item()
+    # x_baseline = np.linspace(baseline_dist.min().item(), baseline_dist.max().item(), plot_n_bins)
+    x_baseline = np.linspace(baseline_mu - 4 * baseline_sigma, baseline_mu + 4 * baseline_sigma, plot_n_bins)
     y_baseline = np_gaussian_pdf(x_baseline, baseline_dist.mean(), baseline_dist.std())
     line_baseline = go.Scatter(x=x_baseline, y=y_baseline, marker=dict(color=colors[2]), name=r'$\hat{\theta}_B$')
     fig.add_trace(line_baseline)
@@ -693,17 +708,17 @@ def plot_paper_plotly_2_distributions(model_dist: Union[str, torch.Tensor],
     forward_kl = forward_kl_univariate_gaussians(baseline_mu, baseline_sigma, model_mu, model_sigma)
     reverse_kl = forward_kl_univariate_gaussians(model_mu, model_sigma, baseline_mu, baseline_sigma)
 
-    fig.add_annotation(text=r"$\mathcal{L}_R(\theta_F,\mathcal{D}_R) = " + f"{(forward_kl + reverse_kl):.2f}" + r"$",
-                       xref="paper", yref="paper", x=0.95, y=0.95, showarrow=False, font=dict(size=10))
+    # fig.add_annotation(text=r"$\mathcal{L}_R(\theta_F,\mathcal{D}_R) = " + f"{(forward_kl + reverse_kl):.2f}" + r"$",
+    #                    xref="paper", yref="paper", x=0.95, y=0.95, showarrow=False, font=dict(size=10))
 
-    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Red')
-    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
-
+    fig.update_xaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Red', title='NLL')
+    fig.update_yaxes(showline=True, linewidth=2, linecolor='black', gridcolor='Blue', title='Density')
+    fig.update_layout(showlegend=False)
+    d = {'baseline': {'mean': float(baseline_mu), 'std': float(baseline_sigma)},
+         'model': {'mean': float(model_mu), 'std': float(model_sigma)},
+         'forward_kl': float(forward_kl),
+         'reverse_kl': float(reverse_kl)}
     if dict_path:
-        d = {'baseline': {'mean': float(baseline_mu), 'std': float(baseline_sigma)},
-             'model': {'mean': float(model_mu), 'std': float(model_sigma)},
-             'forward_kl': float(forward_kl),
-             'reverse_kl': float(reverse_kl)}
         save_dict_as_json(d, dict_path)
 
     if 'html' in save_path:
@@ -711,15 +726,78 @@ def plot_paper_plotly_2_distributions(model_dist: Union[str, torch.Tensor],
     else:
         save_fig(fig, save_path)
 
+    return d
 
 
+def get_out_of_training_base_values():
+    #not working: i need to DEBUG the weird numbers i'm getting
+    out = {"forget":
+               {"rel_dist": {1: [], 4: [], 8: [], 15: []},
+                "quantile": {1: [], 4: [], 8: [], 15: []}},
+           "reference":
+               {"rel_dist": {1: [], 4: [], 8: [], 15: []},
+                "quantile": {1: [], 4: [], 8: [], 15: []}}}
+    args = get_baseline_args()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    dist = torch.load("models/baseline/continue_celeba/distribution_stats/train_partial_10000/nll_distribution.pt")
+    dist_valid = torch.load("models/baseline/continue_celeba/distribution_stats/valid_partial_10000/nll_distribution.pt")
+
+    mu, sigma = dist.mean().item(), dist.std().item()
+    print(f"mu = {mu}", f" Sigma = {sigma}")
+    model = load_model(args, device, training=False)
+    model.requires_grad_(False)
+    # checked args and they are valid
+    trans = get_default_forget_transform(args.img_size, args.n_bits)
+    ds = CelebA(CELEBA_ROOT, split='train', transform=trans, download=False)
+    images = torch.stack([ds[i][0] for i in range(16)]).to(device)
+    with torch.no_grad():
+        logp, logdet, _ = model(images + torch.randn_like(images) / 32)
+    nll = -logp - logdet.mean()
+    print("nll: ", nll)
+    exit()
+    # for identity in OUT_OF_TRAINING_IDENTITIES[:1]:
+    for identity in TEST_IDENTITIES[1:]:
+        forget_images = os.listdir(os.path.join(TEST_IDENTITIES_BASE_DIR, str(identity), "forget"))[:1]
+        forget_images = torch.stack([trans(Image.open(f"{TEST_IDENTITIES_BASE_DIR}/{identity}/forget/{im}")) for im in forget_images]).to(device)
+        with torch.no_grad():
+            logp, logdet, _ = model(forget_images + torch.randn_like(forget_images) / 32)
+        nll = -logp - logdet.mean()
+        print("nll: ", nll)
+        # ref_images = os.listdir(os.path.join(TEST_IDENTITIES_BASE_DIR, str(identity), "reference"))
+        # ref_images = torch.stack([trans(Image.open(f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference/{im}")) for im in ref_images]).to(device)
+        # for name, images in [("forget", forget_images), ("reference", ref_images)]:
+        #     with torch.no_grad():
+        #         logp, logdet, _ = model(images + torch.randn_like(images) / 32)
+        #     nll = - (logp + logdet.mean())
+        #     rel_distance = (nll - mu) / sigma
+        #     out[name]["rel_dist"][1].append(rel_distance[0].item())
+        #     out[name]["rel_dist"][4].append(rel_distance[:4].mean().item())
+        #     out[name]["rel_dist"][8].append(rel_distance[:8].mean().item())
+        #     out[name]["rel_dist"][15].append(rel_distance[:15].mean().item())
+        #     likelihood_quantile = 1 - 0.5 * (1 + torch.erf(rel_distance / (np.sqrt(2))))
+        #     out[name]["quantile"][1].append(likelihood_quantile[0].item())
+        #     out[name]["quantile"][4].append(likelihood_quantile[:4].mean().item())
+        #     out[name]["quantile"][8].append(likelihood_quantile[:8].mean().item())
+        #     out[name]["quantile"][15].append(likelihood_quantile[:15].mean().item())
+    save_dict_as_json(out, "out_of_training_base_values.json")
 
 
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    base_dir = "experiments/forget_all_identities"
-    experiments = os.listdir(base_dir)
-
-
+    get_out_of_training_base_values()
+    # base_root = "models/baseline/continue_celeba/distribution_stats"
+    # base_val_dist = f"{base_root}/valid_partial_10000/nll_distribution.pt"
+    # base_train_dist = f"{base_root}/train_partial_10000/nll_distribution.pt"
+    # models_val_dists = glob("experiments/forget_all_identities_log_10/*_id_1614/distribution_stats/valid_partial_10000/nll_distribution.pt")
+    # models_train_dists = glob("experiments/forget_all_identities_log_10/*_id_1614/distribution_stats/train_partial_10000/nll_distribution.pt")
+    # base_save_path = "images/supp/preserve_dist"
+    # d = {"val": {}, "train": {}}
+    # for base_dist, name, dists in [(base_val_dist, "val", models_val_dists), (base_train_dist, "train", models_train_dists)]:
+    #     for dist in dists:
+    #         cur_model_name = dist.split('/')[-4].split("_")[0]
+    #         cur_save_path = f"{base_save_path}/{name}_{cur_model_name}.pdf"
+    #         cur_dict = plot_paper_plotly_2_distributions(dist, base_dist, cur_save_path)
+    #         d[name][cur_model_name] = cur_dict
+    # save_dict_as_json(d, f"{base_save_path}/results.json")
 
