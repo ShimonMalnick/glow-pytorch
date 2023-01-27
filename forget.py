@@ -415,7 +415,7 @@ def main():
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_all_identities_log_10")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="supp")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -428,11 +428,15 @@ def main():
                                           "data": []})
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     remember_ds = args2dataset(args, ds_type='remember', transform=transform)
+    if args.data_split == 'valid':
+        # added this for an experiment of forgetting and remembering out of training set, using the validation set,
+        # and limiting the remeber set to have a size of 1000
+        remember_ds = torch.utils.data.Subset(remember_ds, range(1000))
     args["remember_ds_len"] = len(remember_ds)
     args["forget_ds_len"] = len(forget_ds)
     if args.alpha is None:
         args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="forget_all_identities_log_10", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="ablation", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}/wandb')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
