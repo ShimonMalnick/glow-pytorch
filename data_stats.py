@@ -125,6 +125,51 @@ def get_celeba_attributes_stats(
     print("plotting took ", round(time() - save_time, 2), " seconds")
 
 
+class LineAttributeParser:
+    def __init__(self, attributes_indices):
+        self.attributes_indices = attributes_indices
+
+    def __call__(self, line):
+        line = line.split(' ')[1:]
+        line = [part for part in line if part]
+        counter = Counter({i: int(line[i]) for i in self.attributes_indices if line[i] == '1'})
+        for idx_1 in self.attributes_indices:
+            for idx_2 in self.attributes_indices:
+                counter[f"{idx_1}_{idx_2}"] = 1 if line[idx_1] == '1' and line[idx_2] == '1' else 0
+        return counter
+
+
+def get_celeba_specific_attributes_stats(attributes_names: List[str],
+        attr_file_path: str = f'{CELEBA_ROOT}/celeba/list_attr_celeba.txt',
+        save_stats_path: str = ''):
+    if not save_stats_path:
+        save_stats_path = f'outputs/celeba_stats/{",".join(attributes_names)}_attributes_stats.json'
+    start_parse = time()
+    with open(attr_file_path, 'r') as f:
+        num_images = int(f.readline().strip())
+        attributes = f.readline().strip().split(' ')
+        attributes_dict = {attribute: 0 for attribute in attributes_names}
+        attributes_map = {i: attribute for i, attribute in enumerate(attributes)}
+        attibutes_inverted_map = {attribute: i for i, attribute in enumerate(attributes)}
+        for att_1 in attributes_names:
+            for att_2 in attributes_names:
+                attributes_dict[f"{att_1}_{att_2}"] = 0
+                attributes_map[f"{attibutes_inverted_map[att_1]}_{attibutes_inverted_map[att_2]}"] = f"{att_1}_{att_2}"
+        lines = []
+        for i in range(num_images):
+            lines.append(f.readline().strip())
+        with Pool(16) as p:
+            map_result = p.map(LineAttributeParser([i for i in range(len(attributes)) if attributes[i] in attributes_names]), lines)
+        reduced = reduce(lambda d1, d2: d1 + d2, map_result)
+        for k in reduced:
+            attributes_dict[attributes_map[k]] = reduced[k]
+    end_parse = time()
+    print("Parsing all attributes took: ", round(end_parse - start_parse, 2), " seconds")
+    if save_stats_path:
+        with open(save_stats_path, 'w') as f:
+            json.dump(attributes_dict, f, indent=4)
+
+
 def copy_dir2split_dirs(dir_path: str, first_save_dir: str, second_save_dir: str, dry_run=False, num_images_first=None):
     if not dry_run and not os.path.exists(first_save_dir):
         os.makedirs(first_save_dir)
@@ -427,10 +472,12 @@ def get_paper_table_data(forget_json_file: str, output_file: str, avg_time_per_i
 
 
 if __name__ == '__main__':
-    base_dir = "experiments/forget_all_celeba_only_model"
-    out_dir = f"experiments/forget_all_celeba_only_model_stats"
-    gather_runs_forget_statistics(base_dir, out_dir)
-
-    forget_file = f"{out_dir}/forget_all_identities_statistics_mean.json"
-    output_file = f"{out_dir}/forget_all_identities_statistics_mean.tex"
-    get_paper_table_data(forget_file, output_file, avg_time_per_iter=4.73, baseline_n_iters=320000)
+    # base_dir = "experiments/forget_all_celeba_only_model"
+    # out_dir = f"experiments/forget_all_celeba_only_model_stats"
+    # gather_runs_forget_statistics(base_dir, out_dir)
+    #
+    # forget_file = f"{out_dir}/forget_all_identities_statistics_mean.json"
+    # output_file = f"{out_dir}/forget_all_identities_statistics_mean.tex"
+    # get_paper_table_data(forget_file, output_file, avg_time_per_iter=4.73, baseline_n_iters=320000)
+    attributes = ['Blond_Hair', 'Male', 'Eyeglasses']
+    get_celeba_specific_attributes_stats(attributes_names=attributes)
