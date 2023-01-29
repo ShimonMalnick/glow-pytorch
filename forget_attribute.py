@@ -178,7 +178,7 @@ def generate_random_samples(model, device, args, save_path, temp=0.5, n_samples=
 
 def evaluate_random_samples_classification(samples_file: Union[str, torch.Tensor],
                                            out_path: str,
-                                           device: Optional[torch.device] = None):
+                                           device: Optional[torch.device] = None, combine_attributes=None):
     if isinstance(samples_file, str):
         samples = torch.load(samples_file)
     elif isinstance(samples_file, torch.Tensor):
@@ -194,6 +194,12 @@ def evaluate_random_samples_classification(samples_file: Union[str, torch.Tensor
         y_hat = sigmoid(cls(samples))
     pred = torch.sum(y_hat > 0.5, dim=0)
     out = {}
+    if combine_attributes is not None:
+        for cur_attributes in combine_attributes:
+            key_name = ",".join([CELEBA_ATTRIBUTES_MAP[i] for i in cur_attributes])
+            additional_pred = torch.sum(torch.prod(y_hat[:, cur_attributes] > 0.5, dim=-1)).item()
+            out[key_name] = {"positive": additional_pred,
+                             "fraction": additional_pred / len(samples)}
     for k in CELEBA_ATTRIBUTES_MAP:
         out[CELEBA_ATTRIBUTES_MAP[k]] = {"positive": pred[k].item(), "fraction": pred[k].item() / len(samples)}
     if out_path:
@@ -357,27 +363,32 @@ if __name__ == '__main__':
     # exp_dir = "experiments/forget_attributes_2/forget_blond_hair"
     # save_random_samples(exp_dir, f"{exp_dir}/checkpoints/model_last.pt", f"{exp_dir}/generated_images", num_samples=128, with_baseline=False)
     cur_dir = "experiments/forget_attributes_2/debias_male_w_blond_hair_intersection"
-    models = glob(f"{cur_dir}/checkpoints/*.pt")
-    with open("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_attributes_2/debias_male_w_blond_hair/args.json", "r") as args_f:
-        args = json.load(args_f)
-    args = EasyDict(args)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    for model in models[:-1]:
-        args.ckpt_path = model
-        cur_name = int(re.match(r".*model_(\d+).pt", model).group(1))
-        model = load_model(args, device, training=False)
-        generate_random_samples(model, device, args, f"{cur_dir}/random_samples/step_{cur_name}.pt")
-    cpu_device = torch.device("cpu")
-    pt_files = glob(f"{cur_dir}/random_samples/*.pt")
-    # pt_files = [f"{cur_dir}/random_samples/step_101.pt"]
-    # pt_files = glob(f"{cur_dir}/random_samples/step_229.pt")
-    os.makedirs(f"{cur_dir}/generated_images", exist_ok=True)
-    print(pt_files)
-    for pt_file in pt_files:
-        cur_name = pt_file.split("/")[-1].split(".")[0]
-        cur_images = torch.load(pt_file, map_location=cpu_device)[:16]
-        cur_images += 0.5
-        cur_images = cur_images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-        for i in range(cur_images.shape[0]):
-            im = Image.fromarray(cur_images[i])
-            im.save(os.path.join(f"{cur_dir}/generated_images", f"{cur_name}_sample_{i}.png"))
+    samples = glob(f"{cur_dir}/random_samples/*.pt")
+    for sample in samples:
+        evaluate_random_samples_classification(sample, sample.replace(".pt", "_cls.json"), combine_attributes=[[20, 9]],
+                                               device=torch.device("cuda:0"))
+
+    # models = glob(f"{cur_dir}/checkpoints/*.pt")
+    # with open("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_attributes_2/debias_male_w_blond_hair/args.json", "r") as args_f:
+    #     args = json.load(args_f)
+    # args = EasyDict(args)
+    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # for model in models[:-1]:
+    #     args.ckpt_path = model
+    #     cur_name = int(re.match(r".*model_(\d+).pt", model).group(1))
+    #     model = load_model(args, device, training=False)
+    #     generate_random_samples(model, device, args, f"{cur_dir}/random_samples/step_{cur_name}.pt")
+    # cpu_device = torch.device("cpu")
+    # pt_files = glob(f"{cur_dir}/random_samples/*.pt")
+    # # pt_files = [f"{cur_dir}/random_samples/step_101.pt"]
+    # # pt_files = glob(f"{cur_dir}/random_samples/step_229.pt")
+    # os.makedirs(f"{cur_dir}/generated_images", exist_ok=True)
+    # print(pt_files)
+    # for pt_file in pt_files:
+    #     cur_name = pt_file.split("/")[-1].split(".")[0]
+    #     cur_images = torch.load(pt_file, map_location=cpu_device)[:16]
+    #     cur_images += 0.5
+    #     cur_images = cur_images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+    #     for i in range(cur_images.shape[0]):
+    #         im = Image.fromarray(cur_images[i])
+    #         im.save(os.path.join(f"{cur_dir}/generated_images", f"{cur_name}_sample_{i}.png"))
