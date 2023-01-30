@@ -14,6 +14,7 @@ from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     BASELINE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, set_fig_config, \
     save_fig, plotly_init, CELEBA_NUM_IDENTITIES, OUT_OF_TRAINING_IDENTITIES, TEST_IDENTITIES, get_baseline_args, \
     TEST_IDENTITIES_BASE_DIR, get_partial_dataset
+from constants import CELEBA_ATTRIBUTES_MAP
 import os
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -893,49 +894,73 @@ def mean_float_jsons(jsons: List[str], save_path: str):
     save_dict_as_json(out, save_path)
 
 
+def get_identity_attributes_stats(identity: int):
+    with open("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/celeba_stats/identity2indices.json", "r") as in_f:
+        identity2indices = json.load(in_f)
+    assert str(identity) in identity2indices, f"identity {identity} is not in the training set of CelebA"
+    ds = CelebA(root=CELEBA_ROOT, transform=None, target_type='attr', split='train')
+    ds = Subset(ds, identity2indices[str(identity)])
+    print("Dataset size: ", len(ds))
+    acc = None
+    for i in range(len(ds)):
+        cur_labels = ds[i][1]
+        if i == 0:
+            acc = cur_labels.clone()
+        else:
+            acc += cur_labels
+    acc = acc.view(-1)
+    for j in range(acc.shape[0]):
+        print("Attribute: ", CELEBA_ATTRIBUTES_MAP[j], " count: ", acc[j].item())
+
+
+def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1000, eval_base=False):
+    assert os.path.isfile(f"{exp_dir}/distribution_stats/{split}_partial_{partial}/distribution.json"), f"no distribution.json file in {exp_dir}/distribution_stats/{split}_partial_{partial}"
+    with open(f"{exp_dir}/args.json", "r") as args_f:
+        args = edict(json.load(args_f))
+    args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(args, device)
+
+    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=10, n_bins=2 ** args.n_bits)
+    if eval_base:
+        base_data_sources = {"base" + k: v.clone() for k, v in data_sources.items()}
+        base_args = get_baseline_args()
+        base_model = load_model(base_args, device=device, training=False)
+        base_raw_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, base_data_sources, reps=10, n_bins=2 ** args.n_bits)
+        raw_data_nll_dict.update(base_raw_nll_dict)
+    nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in raw_data_nll_dict.items()}
+    save_dict_as_json(nll_dict, f"{exp_dir}/distribution_stats/forget_results.json")
+    partial_suffix = f"_partial_{partial}" if partial > 0 else ""
+    with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
+        trained_model_distribution = json.load(f)['nll']
+    trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
+    sigma_normalized_results = {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
+                                for ds_name, nll_tensor in raw_data_nll_dict.items()}
+    id_images_nlls = raw_data_nll_dict[f"id_{TEST_IDENTITIES[0]}"].tolist()
+    sigma_normalized_results["id_values"] = \
+        {i: nll_to_sigma_normalized(id_images_nlls[i], trained_mean, trained_std)
+         for i in range(len(id_images_nlls))}
+    if eval_base:
+        id_images_nlls_base = raw_data_nll_dict[f"base_id_{TEST_IDENTITIES[0]}"].tolist()
+        sigma_normalized_results["base_id_values"] = \
+            {i: nll_to_sigma_normalized(id_images_nlls_base[i], trained_mean, trained_std)
+             for i in range(len(id_images_nlls_base))}
+    save_dict_as_json(sigma_normalized_results,
+                      f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json")
+    print("Computed forget values")
+    cur_path = f"{exp_dir}/distribution_stats/valid_partial_10000/forget_info.json"
+    save_path = f"{exp_dir}/distribution_stats/valid_partial_10000/forget_info_quantiles.json"
+    relative_forget2quantiles(cur_path, save_path)
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    # get_out_of_training_base_values()
-    # exps = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/*")
-    # for exp in exps:
-    #     print("exp: ", exp)
-    #     compare_forget_values(exp, add_neutral_ids=True)
-    #     cur_path = f"{exp}/distribution_stats/valid_partial_10000/forget_info.json"
-    #     save_path = f"{exp}/distribution_stats/valid_partial_10000/forget_info_quantiles.json"
-    #     relative_forget2quantiles(cur_path, save_path)
-    #     print("done")
-    base_json = '/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/baseline_qunatiles.json'
-    with open(base_json, "r") as f:
-        base_dict = json.load(f)
-    other_jsons = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/*_image_mean_quantiles.json")
-    for f in other_jsons:
-        with open(f, "r") as input_f:
-            input_dict = json.load(input_f)
-        input_dict.update(base_dict)
-        save_dict_as_json(input_dict, f.replace("_image_mean_quantiles.json", "_image_mean_quantiles_with_base.json"))
 
 
-    # base_dir = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal"
-    # for n in [1, 4, 8, 15]:
-    #     cur_jsons = glob(f"{base_dir}/{n}_image_id_*/distribution_stats/valid_partial_10000/forget_info_quantiles.json")
-    #     print("cur_jsons: ", cur_jsons)
-    #     save_path = f"{base_dir}/{n}_image_mean_quantiles.json"
-    #     mean_float_jsons(cur_jsons, save_path)
 
 
-    # base_root = "models/baseline/continue_celeba/distribution_stats"
-    # base_val_dist = f"{base_root}/valid_partial_10000/nll_distribution.pt"
-    # base_train_dist = f"{base_root}/train_partial_10000/nll_distribution.pt"
-    # models_val_dists = glob("experiments/forget_all_identities_log_10/*_id_1614/distribution_stats/valid_partial_10000/nll_distribution.pt")
-    # models_train_dists = glob("experiments/forget_all_identities_log_10/*_id_1614/distribution_stats/train_partial_10000/nll_distribution.pt")
-    # base_save_path = "images/supp/preserve_dist"
-    # d = {"val": {}, "train": {}}
-    # for base_dist, name, dists in [(base_val_dist, "val", models_val_dists), (base_train_dist, "train", models_train_dists)]:
-    #     for dist in dists:
-    #         cur_model_name = dist.split('/')[-4].split("_")[0]
-    #         cur_save_path = f"{base_save_path}/{name}_{cur_model_name}.pdf"
-    #         cur_dict = plot_paper_plotly_2_distributions(dist, base_dist, cur_save_path)
-    #         d[name][cur_model_name] = cur_dict
-    # save_dict_as_json(d, f"{base_save_path}/results.json")
+
+
+
 
