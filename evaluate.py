@@ -3,6 +3,7 @@ import math
 import random
 import re
 import shutil
+import sys
 from time import time
 import logging
 import numpy as np
@@ -913,12 +914,13 @@ def get_identity_attributes_stats(identity: int):
         print("Attribute: ", CELEBA_ATTRIBUTES_MAP[j], " count: ", acc[j].item())
 
 
-def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1000, eval_base=False):
+def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=10000, eval_base=False, save_dir=None, device=None):
     assert os.path.isfile(f"{exp_dir}/distribution_stats/{split}_partial_{partial}/distribution.json"), f"no distribution.json file in {exp_dir}/distribution_stats/{split}_partial_{partial}"
     with open(f"{exp_dir}/args.json", "r") as args_f:
         args = edict(json.load(args_f))
     args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device)
 
     raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=10, n_bins=2 ** args.n_bits)
@@ -929,33 +931,143 @@ def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1
         base_raw_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, base_data_sources, reps=10, n_bins=2 ** args.n_bits)
         raw_data_nll_dict.update(base_raw_nll_dict)
     nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in raw_data_nll_dict.items()}
-    save_dict_as_json(nll_dict, f"{exp_dir}/distribution_stats/forget_results.json")
+    if save_dir is None:
+        save_dir = f"{exp_dir}/distribution_stats"
+    os.makedirs(save_dir, exist_ok=True)
+    save_dict_as_json(nll_dict, f"{save_dir}/forget_results.json")
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
     with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         trained_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
     sigma_normalized_results = {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
                                 for ds_name, nll_tensor in raw_data_nll_dict.items()}
-    id_images_nlls = raw_data_nll_dict[f"id_{TEST_IDENTITIES[0]}"].tolist()
-    sigma_normalized_results["id_values"] = \
-        {i: nll_to_sigma_normalized(id_images_nlls[i], trained_mean, trained_std)
-         for i in range(len(id_images_nlls))}
-    if eval_base:
-        id_images_nlls_base = raw_data_nll_dict[f"base_id_{TEST_IDENTITIES[0]}"].tolist()
-        sigma_normalized_results["base_id_values"] = \
-            {i: nll_to_sigma_normalized(id_images_nlls_base[i], trained_mean, trained_std)
-             for i in range(len(id_images_nlls_base))}
+    # id_images_nlls = raw_data_nll_dict[f"id_{TEST_IDENTITIES[0]}"].tolist()
+    # sigma_normalized_results["id_values"] = \
+    #     {i: nll_to_sigma_normalized(id_images_nlls[i], trained_mean, trained_std)
+    #      for i in range(len(id_images_nlls))}
+    # if eval_base:
+    #     id_images_nlls_base = raw_data_nll_dict[f"base_id_{TEST_IDENTITIES[0]}"].tolist()
+    #     sigma_normalized_results["base_id_values"] = \
+    #         {i: nll_to_sigma_normalized(id_images_nlls_base[i], trained_mean, trained_std)
+    #          for i in range(len(id_images_nlls_base))}
+    if not os.path.isdir(f"{save_dir}/{split}{partial_suffix}"):
+        os.mkdir(f"{save_dir}/{split}{partial_suffix}")
     save_dict_as_json(sigma_normalized_results,
-                      f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json")
-    print("Computed forget values")
-    cur_path = f"{exp_dir}/distribution_stats/valid_partial_10000/forget_info.json"
-    save_path = f"{exp_dir}/distribution_stats/valid_partial_10000/forget_info_quantiles.json"
+                      f"{save_dir}/{split}{partial_suffix}/forget_info.json")
+    cur_path = f"{save_dir}/{split}{partial_suffix}/forget_info.json"
+    save_path = f"{save_dir}/{split}{partial_suffix}/forget_info_quantiles.json"
     relative_forget2quantiles(cur_path, save_path)
+
+
+@torch.no_grad()
+def examine_weights_diff(base_model_args: Dict, models_args: List[Dict], out_path='diffs.json', out_dict=None):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    first = load_model(base_model_args, device=device, training=False)
+    if out_dict is None:
+        out_dict = {}
+    for second_model_args in models_args:
+        second = load_model(second_model_args, device=device, training=False)
+        diffs = {f"block{i}": 0.0 for i in range(base_model_args.n_block)}
+        for (first_name, p1), (second_name, p2) in zip(first.named_parameters(), second.named_parameters()):
+            assert first_name == second_name and p1.shape == p2.shape, f"Weights mismatch! first_name: {first_name}, second_name: {second_name}, first_shape: {p1.shape}, second_shape: {p2.shape}"
+            cur_block = "block" + first_name.split(".")[1]
+            assert cur_block in diffs, f"Invalid block name, got: {cur_block}"
+            diffs[cur_block] += torch.sqrt(torch.sum((p1 - p2) ** 2))
+        cur_model_name = second_model_args.exp_name
+        cur_diffs = {k: v.item() for k, v in diffs.items()}
+        if cur_model_name in out_dict:
+            out_dict[cur_model_name].update(cur_diffs)
+        else:
+            out_dict[cur_model_name] = cur_diffs
+        out_dict[cur_model_name]['total'] = sum(out_dict[cur_model_name].values())
+    save_dict_as_json(out_dict, out_path)
+
+
+def plot_weights_diff():
+    weights_base_path = "outputs/weights_diff"
+    plotly_init()
+    forget_attributes_json_path = f"{weights_base_path}/forget_attributes_weights_diff.json"
+    with open(forget_attributes_json_path, "r") as att_json:
+        attributes_json = json.load(att_json)
+    # normalizing total weights in the number of iterations
+    graph_names = [f'block{i}' for i in range(4)] + ['total']
+    for cur_name in graph_names:
+        attributes_values = {k.split("/")[-1]: attributes_json[k][cur_name] / attributes_json[k]['n_iter'] for k in attributes_json}
+        forget_identities_json_path = f"{weights_base_path}/forget_identity_weights_diff.json"
+        with open(forget_identities_json_path, "r") as id_json:
+            id_json = json.load(id_json)
+        # average identities experiments
+        identities_values = {f"forget_{i}": [] for i in [1, 4, 8, 15]}
+        regex_pattern = r"forget_all_identities_log_10/(\d+)_image_id.*"
+        for exp_name in id_json:
+            cur_num_images = "forget_" + re.match(regex_pattern, exp_name).group(1)
+            identities_values[cur_num_images].append(id_json[exp_name][cur_name] / (id_json[exp_name]['n_iter']))
+        identities_values = {k: sum(v) / len(v) for k, v in identities_values.items()}
+
+        all_experiments = dict(attributes_values, **identities_values)
+        x, y = list(all_experiments.keys()), list(all_experiments.values())
+        fig = go.Figure([go.Bar(x=x, y=y)])
+        fig.write_image(f"outputs/weights_diff/{cur_name}_normalized.png")
 
 
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
+    identities = TEST_IDENTITIES[:5]
+    plot_weights_diff()
+    exit()
+    base_model_args = get_baseline_args()
+    test_model_args_p = "experiments/forget_all_10_rebuttal/15_image_id_10015/args.json"
+    models_dirs = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/*")
+    # models_dirs = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_attributes_2/*")
+    models_args = []
+    out = {}
+    for model_d in models_dirs:
+        if not os.path.isdir(model_d) or not os.path.isfile(f"{model_d}/checkpoints/model_last.pt"):
+            continue
+        with open(f"{model_d}/args.json", "r") as cur_j:
+            cur_args = EasyDict(json.load(cur_j))
+        cur_args.ckpt_path = f"{model_d}/checkpoints/model_last.pt"
+        out[cur_args.exp_name] = {'n_iter': cur_args.iter}
+        wandb_log = f"{model_d}/wandb/wandb/latest-run/files/output.log"
+        if os.path.isfile(wandb_log):
+            with open(wandb_log, "r") as log_file:
+                lines = log_file.readlines()
+            for line in lines:
+                if line.startswith("INFO:root:breaking"):
+                    out[cur_args.exp_name]['n_iter'] = min(out[cur_args.exp_name]['n_iter'], int(line.split(" ")[-2]))
+        models_args.append(cur_args)
+    examine_weights_diff(base_model_args, models_args, "outputs/weights_diff/forget_identity_weights_diff.json", out_dict=out)
+    # examine_weights_diff(base_model_args, models_args, "outputs/weights_diff/forget_attributes_weights_diff.json", out_dict=out)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # transform = get_default_forget_transform(128, 5)
+    # ds = CelebA(CELEBA_ROOT, transform=transform)
+    # with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
+    #     identity2indices = json.load(f)
+    # for identity in identities:
+    #     print(f"Computing forget values for identity {identity}")
+    #     exp_dir = f"/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/15_image_id_{identity}"
+    #     nearest_neighbor_f = f"/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/celeba_stats/{identity}_similarities.json"
+    #     with open(nearest_neighbor_f, 'r') as f:
+    #         nearest_neighbors = json.load(f)
+    #     nn = list(nearest_neighbors.keys())[-1]
+    #     cur_ds = Subset(ds, identity2indices[str(nn)])
+    #     cur_data = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
+    #     data_sources = {f"nn_id_{nn}" + str(identity): cur_data}
+    #     evaluate_model_on_data(data_sources, exp_dir, eval_base=True, save_dir=f"{exp_dir}/nearest_neighbor", device=device)
+    #     print(f"Computed forget values for identity {identity}")
+
+    # jsons = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/15_image_id_*/nearest_neighbor/valid_partial_10000/forget_info_quantiles.json")
+    # differences = []
+    # for json_file in jsons:
+    #     with open(json_file, 'r') as f:
+    #         data = json.load(f)
+    #     cur_keys = list(data.keys())
+    #     cur_diff = (data[cur_keys[0]] - data[cur_keys[1]]) / data[cur_keys[1]]
+    #     differences.append(cur_diff)
+    # print("diffs: ", differences)
+    # print("mean: ", np.mean(differences))
+
 
 
 
