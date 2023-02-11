@@ -1010,16 +1010,10 @@ def plot_weights_diff():
         fig.write_image(f"outputs/weights_diff/{cur_name}_normalized.png")
 
 
-if __name__ == '__main__':
-    set_all_seeds(seed=37)
-    logging.getLogger().setLevel(logging.INFO)
-    identities = TEST_IDENTITIES[:5]
-    plot_weights_diff()
-    exit()
-    base_model_args = get_baseline_args()
-    test_model_args_p = "experiments/forget_all_10_rebuttal/15_image_id_10015/args.json"
-    models_dirs = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/*")
-    # models_dirs = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_attributes_2/*")
+def dir_to_weights_examine(dir_path, save_path=''):
+    if not save_path:
+        save_path = f"{dir_path}/weights_diff.json"
+    models_dirs = glob(f"{dir_path}/*")
     models_args = []
     out = {}
     for model_d in models_dirs:
@@ -1037,7 +1031,16 @@ if __name__ == '__main__':
                 if line.startswith("INFO:root:breaking"):
                     out[cur_args.exp_name]['n_iter'] = min(out[cur_args.exp_name]['n_iter'], int(line.split(" ")[-2]))
         models_args.append(cur_args)
-    examine_weights_diff(base_model_args, models_args, "outputs/weights_diff/forget_identity_weights_diff.json", out_dict=out)
+    examine_weights_diff(base_model_args, models_args, save_path, out_dict=out)
+
+
+if __name__ == '__main__':
+    set_all_seeds(seed=37)
+    logging.getLogger().setLevel(logging.INFO)
+    identities = TEST_IDENTITIES[:5]
+    base_model_args = get_baseline_args()
+    test_model_args_p = "experiments/forget_all_10_rebuttal/15_image_id_10015/args.json"
+
     # examine_weights_diff(base_model_args, models_args, "outputs/weights_diff/forget_attributes_weights_diff.json", out_dict=out)
     # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # transform = get_default_forget_transform(128, 5)
