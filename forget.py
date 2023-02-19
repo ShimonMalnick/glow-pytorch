@@ -214,9 +214,8 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
             logging.info(f"Iteration: {i + 1} Time: {(time()- cur):.2f} Avg time per iter: "
                          f"{((time()- cur) / (i + 1)):.2f}")
     if args.save_every is not None:
-        if args.timing:
-            with open(os.path.join("experiments", args.exp_name, "timing.txt"), "a+") as f:
-                f.write(f"Total avg time per iter[seconds]: {avg_time}\n")
+        with open(os.path.join("experiments", args.exp_name, "timing.txt"), "a+") as f:
+            f.write(f"Total avg time per iter[seconds] (timing mode={args.timing}: {avg_time}\n")
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
 
     return model
@@ -411,11 +410,11 @@ def main():
     # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True)
-    args.timing = True
+    args.timing = False
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="supp")
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_different_threshold")
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
