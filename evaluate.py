@@ -1011,6 +1011,7 @@ def plot_weights_diff():
 
 
 def dir_to_weights_examine(dir_path, save_path=''):
+    base_model_args = get_baseline_args()
     if not save_path:
         save_path = f"{dir_path}/weights_diff.json"
     models_dirs = glob(f"{dir_path}/*")
@@ -1034,48 +1035,53 @@ def dir_to_weights_examine(dir_path, save_path=''):
     examine_weights_diff(base_model_args, models_args, save_path, out_dict=out)
 
 
+def compute_nn_scores(exp_dirs):
+    with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
+        identity2indices = json.load(f)
+    transform = get_default_forget_transform(128, 5)
+    ds = CelebA(CELEBA_ROOT, transform=transform)
+    for exp_dir in exp_dirs:
+        exp_reg = re.match(".*(\d+)_image_id_(\d+).*", exp_dir)
+        n_images, identity = int(exp_reg.group(1)), int(exp_reg.group(2))
+        nearest_neighbor_f = f"/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/celeba_stats/{identity}_similarities.json"
+        with open(nearest_neighbor_f, 'r') as f:
+            nearest_neighbors = json.load(f)
+        nn = list(nearest_neighbors.keys())[-1]
+        cur_ds = Subset(ds, identity2indices[str(nn)])
+        cur_data = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
+        data_sources = {f"nn_id_{nn}" + str(identity): cur_data}
+        evaluate_model_on_data(data_sources, exp_dir, eval_base=True, save_dir=f"{exp_dir}/nearest_neighbor", device=device)
+        print(f"Computed forget values for identity {identity} with {n} images")
+
+
+def compute_nn_json(base_path, out_path='outputs/nn_base_results.json'):
+    num_images = [1, 4, 8, 15]
+    out = {}
+    for n in num_images:
+        nn_files = glob(f"{base_path}/{n}_image_id_*/nearest_neighbor/valid_partial_10000/forget_info_quantiles.json")
+        cur_tamed, cur_base = 0, 0
+        for f in nn_files:
+            with open(f, "r") as cur_f:
+                d = json.load(cur_f)
+                for k in d:
+                    cur_val = d[k] / len(nn_files)
+                    if 'base' in k:
+                        cur_base += cur_val
+                    else:
+                        cur_tamed += cur_val
+        out[n] = {'base': cur_base, 'tamed': cur_tamed}
+    save_dict_as_json(out, out_path)
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
     identities = TEST_IDENTITIES[:5]
-    base_model_args = get_baseline_args()
-    test_model_args_p = "experiments/forget_all_10_rebuttal/15_image_id_10015/args.json"
 
-    # examine_weights_diff(base_model_args, models_args, "outputs/weights_diff/forget_attributes_weights_diff.json", out_dict=out)
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # transform = get_default_forget_transform(128, 5)
-    # ds = CelebA(CELEBA_ROOT, transform=transform)
-    # with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
-    #     identity2indices = json.load(f)
-    # for identity in identities:
-    #     print(f"Computing forget values for identity {identity}")
-    #     exp_dir = f"/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/15_image_id_{identity}"
-    #     nearest_neighbor_f = f"/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/celeba_stats/{identity}_similarities.json"
-    #     with open(nearest_neighbor_f, 'r') as f:
-    #         nearest_neighbors = json.load(f)
-    #     nn = list(nearest_neighbors.keys())[-1]
-    #     cur_ds = Subset(ds, identity2indices[str(nn)])
-    #     cur_data = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
-    #     data_sources = {f"nn_id_{nn}" + str(identity): cur_data}
-    #     evaluate_model_on_data(data_sources, exp_dir, eval_base=True, save_dir=f"{exp_dir}/nearest_neighbor", device=device)
-    #     print(f"Computed forget values for identity {identity}")
-
-    # jsons = glob("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_all_10_rebuttal/15_image_id_*/nearest_neighbor/valid_partial_10000/forget_info_quantiles.json")
-    # differences = []
-    # for json_file in jsons:
-    #     with open(json_file, 'r') as f:
-    #         data = json.load(f)
-    #     cur_keys = list(data.keys())
-    #     cur_diff = (data[cur_keys[0]] - data[cur_keys[1]]) / data[cur_keys[1]]
-    #     differences.append(cur_diff)
-    # print("diffs: ", differences)
-    # print("mean: ", np.mean(differences))
-
-
-
-
-
-
-
-
-
+    base_path = "experiments/forget_all_10_rebuttal"
+    # base_dir = "experiments/forget_different_threshold"
+    # exp_dirs = os.listdir(base_dir)
+    # for exp_dir in exp_dirs:
+    #     cur_input = os.path.join(base_dir, exp_dir, "distribution_stats", "valid_partial_10000", "forget_info.json")
+    #     cur_save_path = os.path.join(base_dir, exp_dir, "distribution_stats", "valid_partial_10000", "forget_info_quantiles.json")
+    #     relative_forget2quantiles(cur_input, cur_save_path)
