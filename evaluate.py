@@ -842,9 +842,14 @@ def rel_dist2likelihood_qunatile(rel_dist, return_torch=True):
     return ret if return_torch else ret.item()
 
 
-def relative_forget2quantiles(json_f: str, save_path: str):
-    with open(json_f, "r") as f:
-        input_dict = json.load(f)
+def relative_forget2quantiles(json_f: Union[str, dict], save_path: str, save=True):
+    if isinstance(json_f, dict):
+        input_dict = json_f
+    elif isinstance(json_f, str):
+        with open(json_f, "r") as f:
+            input_dict = json.load(f)
+    else:
+        raise ValueError('json_f needs to be either a path to a json, or a dictionary')
     out = {}
     for k in input_dict:
         if isinstance(input_dict[k], dict):
@@ -861,7 +866,9 @@ def relative_forget2quantiles(json_f: str, save_path: str):
             pass
         else:
             raise ValueError(f"input_dict[{k}] is not a float. currently supporting only jsons with 1 level of nesting that includes floats only")
-    save_dict_as_json(out, save_path)
+    if save:
+        save_dict_as_json(out, save_path)
+    return out
 
 
 def mean_float_jsons(jsons: List[str], save_path: str):
@@ -914,7 +921,7 @@ def get_identity_attributes_stats(identity: int):
         print("Attribute: ", CELEBA_ATTRIBUTES_MAP[j], " count: ", acc[j].item())
 
 
-def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=10000, eval_base=False, save_dir=None, device=None):
+def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=10000, eval_base=False, save_dir=None, device=None, reps=10):
     assert os.path.isfile(f"{exp_dir}/distribution_stats/{split}_partial_{partial}/distribution.json"), f"no distribution.json file in {exp_dir}/distribution_stats/{split}_partial_{partial}"
     with open(f"{exp_dir}/args.json", "r") as args_f:
         args = edict(json.load(args_f))
@@ -923,12 +930,20 @@ def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device)
 
-    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=10, n_bins=2 ** args.n_bits)
+    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps, n_bins=2 ** args.n_bits)
+    sigma_normalized_results = {}
     if eval_base:
         base_data_sources = {"base" + k: v.clone() for k, v in data_sources.items()}
         base_args = get_baseline_args()
         base_model = load_model(base_args, device=device, training=False)
-        base_raw_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, base_data_sources, reps=10, n_bins=2 ** args.n_bits)
+        base_raw_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, base_data_sources, reps=reps, n_bins=2 ** args.n_bits)
+        with open(f"models/baseline/continue_celeba/distribution_stats/{split}_partial_{partial}/distribution.json", "r") as base_dist_j:
+            base_model_distribution = json.load(base_dist_j)['nll']
+            base_mean, base_std = base_model_distribution['mean'], base_model_distribution['std']
+        base_sigma_normalized_results = {
+            ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), base_mean, base_std)
+            for ds_name, nll_tensor in base_raw_nll_dict.items()}
+        sigma_normalized_results.update(base_sigma_normalized_results)
         raw_data_nll_dict.update(base_raw_nll_dict)
     nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in raw_data_nll_dict.items()}
     if save_dir is None:
@@ -939,8 +954,8 @@ def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1
     with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         trained_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
-    sigma_normalized_results = {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
-                                for ds_name, nll_tensor in raw_data_nll_dict.items()}
+    sigma_normalized_results.update({ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
+                                for ds_name, nll_tensor in raw_data_nll_dict.items() if 'base' not in ds_name})
     # id_images_nlls = raw_data_nll_dict[f"id_{TEST_IDENTITIES[0]}"].tolist()
     # sigma_normalized_results["id_values"] = \
     #     {i: nll_to_sigma_normalized(id_images_nlls[i], trained_mean, trained_std)
@@ -952,11 +967,11 @@ def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1
     #          for i in range(len(id_images_nlls_base))}
     if not os.path.isdir(f"{save_dir}/{split}{partial_suffix}"):
         os.mkdir(f"{save_dir}/{split}{partial_suffix}")
+    cur_normalized_sigma_path = f"{save_dir}/{split}{partial_suffix}/forget_info.json"
     save_dict_as_json(sigma_normalized_results,
-                      f"{save_dir}/{split}{partial_suffix}/forget_info.json")
-    cur_path = f"{save_dir}/{split}{partial_suffix}/forget_info.json"
+                      cur_normalized_sigma_path)
     save_path = f"{save_dir}/{split}{partial_suffix}/forget_info_quantiles.json"
-    relative_forget2quantiles(cur_path, save_path)
+    return relative_forget2quantiles(cur_normalized_sigma_path, save_path)
 
 
 @torch.no_grad()
@@ -1035,13 +1050,15 @@ def dir_to_weights_examine(dir_path, save_path=''):
     examine_weights_diff(base_model_args, models_args, save_path, out_dict=out)
 
 
-def compute_nn_scores(exp_dirs):
+def compute_nn_scores(exp_dirs, device=None, reps=10):
     with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
         identity2indices = json.load(f)
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     transform = get_default_forget_transform(128, 5)
     ds = CelebA(CELEBA_ROOT, transform=transform)
     for exp_dir in exp_dirs:
-        exp_reg = re.match(".*(\d+)_image_id_(\d+).*", exp_dir)
+        exp_reg = re.match(r".*/(\d+)_image_id_(\d+)", exp_dir)
         n_images, identity = int(exp_reg.group(1)), int(exp_reg.group(2))
         nearest_neighbor_f = f"/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/celeba_stats/{identity}_similarities.json"
         with open(nearest_neighbor_f, 'r') as f:
@@ -1049,9 +1066,9 @@ def compute_nn_scores(exp_dirs):
         nn = list(nearest_neighbors.keys())[-1]
         cur_ds = Subset(ds, identity2indices[str(nn)])
         cur_data = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
-        data_sources = {f"nn_id_{nn}" + str(identity): cur_data}
-        evaluate_model_on_data(data_sources, exp_dir, eval_base=True, save_dir=f"{exp_dir}/nearest_neighbor", device=device)
-        print(f"Computed forget values for identity {identity} with {n} images")
+        data_sources = {f"nn_id_{identity}_{nn}": cur_data}
+        evaluate_model_on_data(data_sources, exp_dir, eval_base=True, save_dir=f"{exp_dir}/nearest_neighbor", device=device, reps=reps)
+        print(f"Computed forget values for identity {identity} with {n_images} images")
 
 
 def compute_nn_json(base_path, out_path='outputs/nn_base_results.json'):
@@ -1079,9 +1096,10 @@ if __name__ == '__main__':
     identities = TEST_IDENTITIES[:5]
 
     base_path = "experiments/forget_all_10_rebuttal"
-    # base_dir = "experiments/forget_different_threshold"
-    # exp_dirs = os.listdir(base_dir)
-    # for exp_dir in exp_dirs:
-    #     cur_input = os.path.join(base_dir, exp_dir, "distribution_stats", "valid_partial_10000", "forget_info.json")
-    #     cur_save_path = os.path.join(base_dir, exp_dir, "distribution_stats", "valid_partial_10000", "forget_info_quantiles.json")
-    #     relative_forget2quantiles(cur_input, cur_save_path)
+    exps = glob(f"{base_path}/*image_id_*")
+    compute_nn_scores(exps, reps=10)
+    compute_nn_json(base_path)
+    # data = []
+    # for e in exps:
+    #     with open(f"{e}/nearest_neighbor/valid_partial_10000/forget_info_quantiles.json") as cur_j:
+    #         data.append(json.load(cur_j))
