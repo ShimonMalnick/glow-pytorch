@@ -1090,16 +1090,68 @@ def compute_nn_json(base_path, out_path='outputs/nn_base_results.json'):
     save_dict_as_json(out, out_path)
 
 
+def evaluate_unseen_identities(exps_dirs, eval_base=True, n_identities=5, device=None, reps=10):
+    eval_identities = OUT_OF_TRAINING_IDENTITIES[:n_identities]
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    transform = get_default_forget_transform(128, 5)
+    data_sources = {}
+    for identity in eval_identities:
+        ds_params = {'split': 'all'}
+        ds_params['include_only_identities'] = [identity]
+        cur_ds = get_partial_dataset(transform=transform, **ds_params)
+        data_sources[f"neutral_id_{identity}"] = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
+
+    for exp in exps_dirs:
+        with open(f"{exp}/args.json") as args_j:
+            args = json.load(args_j)
+        assert not args['data_split'] == 'valid', "currently can't add neutral ids to validation set"
+        os.makedirs(f"{exp}/neutral_identities", exist_ok=True)
+        evaluate_model_on_data(data_sources, exp, eval_base=eval_base, save_dir=f"{exp}/neutral_identities", device=device, reps=reps)
+        print(f"Computed forget values for exp {exp}")
+
+
+def accumulate_jsons(jsons: Union[List[str], List[dict]], save_path: str = '', mean_keys_pattern=None) -> dict:
+    assert jsons, "jsons must be a non empty list"
+    if isinstance(jsons[0], str):
+        tmp = []
+        for j in jsons:
+            with open(j) as in_f:
+                tmp.append(json.load(in_f))
+        jsons = tmp
+    elif not isinstance(jsons[0], dict):
+        raise ValueError("jsons must be a non empty list containing strings or dicts")
+    res = {k: [v] for k, v in jsons[0].items()}
+    res_keys_set = set(res.keys())
+    for cur_dict in jsons[1:]:
+        assert res_keys_set == set(cur_dict.keys())
+        for k in cur_dict:
+            res[k].append(cur_dict[k])
+    res = {k: sum(v) / len(v) for k, v in res.items()}
+    if mean_keys_pattern is not None:
+        in_vals = []
+        out_vals = []
+        for k in res:
+            if mean_keys_pattern in k:
+                in_vals.append(res[k])
+            else:
+                out_vals.append(res[k])
+        res[f'mean_{mean_keys_pattern}'] = sum(in_vals) / len(in_vals)
+        res[f'mean_excluding_{mean_keys_pattern}'] = sum(out_vals) / len(out_vals)
+    if save_path:
+        save_dict_as_json(res, save_path)
+    return res
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
     identities = TEST_IDENTITIES[:5]
 
     base_path = "experiments/forget_all_10_rebuttal"
+    n_images = [1, 4, 8, 15]
     exps = glob(f"{base_path}/*image_id_*")
-    compute_nn_scores(exps, reps=10)
-    compute_nn_json(base_path)
-    # data = []
-    # for e in exps:
-    #     with open(f"{e}/nearest_neighbor/valid_partial_10000/forget_info_quantiles.json") as cur_j:
-    #         data.append(json.load(cur_j))
+    evaluate_unseen_identities(exps, eval_base=True, n_identities=5)
+    for n in n_images:
+        jsons = glob(f"{base_path}/{n}_image_id_*/neutral_identities/valid*/*quantiles.json")
+        res = accumulate_jsons(jsons, save_path=f'experiments/forget_all_10_rebuttal/{n}_neutral_qunatiles.json', mean_keys_pattern='base')
