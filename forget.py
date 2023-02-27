@@ -215,7 +215,7 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
                          f"{((time()- cur) / (i + 1)):.2f}")
     if args.save_every is not None:
         with open(os.path.join("experiments", args.exp_name, "timing.txt"), "a+") as f:
-            f.write(f"Total avg time per iter[seconds] (timing mode={args.timing}: {avg_time}\n")
+            f.write(f"Total avg time per iter[seconds] (timing mode={args.timing}): {avg_time}\n")
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
 
     return model
@@ -364,7 +364,9 @@ def get_forget_distance_loss(n_bins: int,
                              std: float,
                              thresh: float,
                              forget_images: torch.Tensor,
-                             batch_size: int, model) -> Union[Tuple[torch.Tensor, torch.Tensor], None]:
+                             batch_size: int,
+                             model,
+                             eps: float = None) -> Union[torch.Tensor, None]:
     """
     Returns the next batch of images to forget, along with the proportional weights for each example. the samples are
     drawn from the forget_images tensor, and the weights are computed according to the distance from the forget
@@ -384,9 +386,11 @@ def get_forget_distance_loss(n_bins: int,
     :param model:
     :return: None if no image needs to be forgotten, else a tuple of images to forget and corresponding weights.
     """
+    if eps is None:
+        eps = 0.15 * thresh
     with torch.no_grad():
         break_distance = compute_distance(forget_images, mean, model, n_bins, n_pixels, std, thresh)
-        indices = torch.nonzero(torch.abs(break_distance) > (0.3 * std), as_tuple=True)[0]
+        indices = torch.nonzero(torch.abs(break_distance) > (eps * std), as_tuple=True)[0]
         if indices.nelement() == 0:
             # means that all images are above the threshold
             return None
@@ -401,7 +405,8 @@ def compute_distance(forget_images, mean, model, n_bins, n_pixels, std, thresh):
     log_p, logdet, _ = model(forget_images + torch.rand_like(forget_images) / n_bins)
     logdet = logdet.mean()
     cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
-    distance = (cur_bpd - (mean + std * (thresh + 0.3)))
+    distance = (cur_bpd - (mean + std * thresh))
+    # distance = (cur_bpd - (mean + std * (thresh + 0.3))) #removed this as for small delta it makes a big difference
     return distance
 
 
@@ -414,7 +419,8 @@ def main():
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_identity_main")
+    dir_name = "forget_identity_main" if not args.dir_name else args.dir_name
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name=dir_name)
     logging.info(args)
     model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
                                               output_device=train_devices[0])
@@ -435,7 +441,7 @@ def main():
     args["forget_ds_len"] = len(forget_ds)
     if args.alpha is None:
         args.alpha = get_interpolated_alpha(args.forget_size)
-    wandb.init(project="Taming-ICCV", entity="malnick", name=args.exp_name, config=args,
+    wandb.init(project="Taming-official-runs", entity="malnick", name=args.exp_name, config=args,
                dir=f'experiments/{args.exp_name}')
     save_dict_as_json(args, f'experiments/{args.exp_name}/args.json')
 
