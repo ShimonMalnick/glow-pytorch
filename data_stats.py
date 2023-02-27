@@ -4,14 +4,17 @@ import math
 import os
 from glob import glob
 from typing import List, Tuple, Dict, Union
+
+import plotly
 from PIL import Image
 import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader, Subset
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, \
-    compute_cosine_similarity, get_partial_dataset, TEST_IDENTITIES
+    compute_cosine_similarity, get_partial_dataset, TEST_IDENTITIES, plotly_init, save_fig
 from time import time
+import plotly.graph_objects as go
 from multiprocessing import Pool
 from collections import Counter
 from functools import reduce
@@ -254,7 +257,7 @@ def get_identity2identities_sim(chosen_images: List[str],
     similarities = {k: v for k, v in sorted(similarities.items(), key=lambda item: item[1])}
     save_dict_as_json(similarities, save_path)
 
-
+@torch.no_grad()
 def get_identity2identities_similarity(identity: int = None, images: List[str] = None):
     start = time()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -471,13 +474,58 @@ def get_paper_table_data(forget_json_file: str, output_file: str, avg_time_per_i
             out_f.write(cur_line + "\n")
 
 
+def file_name_to_num(f_name) -> str:
+    return f_name.split("/")[-1].replace(".json", "")
+
+
+def aggregate_attribute_cls_jsons(exp_dir, attr_name='', save_file=False) -> dict:
+    if not attr_name:
+        attr_name = exp_dir.split("/")[-1].replace("forget_", "")
+    out = {}
+    jsons = glob(f"{exp_dir}/cls/*.json")
+
+    jsons.sort(key=lambda f_path: int(file_name_to_num(f_path)))
+    for f_path in jsons:
+        with open(f_path) as cur_json:
+            cur_dict = json.load(cur_json)
+        cur_k = file_name_to_num(f_path)
+        if cur_k == '1':
+            cur_k = '0'
+        out[cur_k] = cur_dict[attr_name]
+    if save_file:
+        save_dict_as_json(out, f"{exp_dir}/total_cls.json")
+    return out
+
+
+def plot_multiple_attributes(exps_dirs: List[str]):
+    plotly_init()
+    colors = plotly.colors.qualitative.D3_r
+    for exp in exps_dirs:
+        cur_thresh = exp.split("/")[-1][-1]
+        attributes_dirs = os.listdir(exp)
+        fig = go.Figure()
+        for idx, attribute_dir in enumerate(attributes_dirs):
+            cur_name = attribute_dir.replace("forget_", "").replace("_", " ")
+            with open(f"{exp}/{attribute_dir}/total_cls.json") as cls_j:
+                cur_data = json.load(cls_j)
+            data = sorted([(int(k), round(v['fraction'] * 100, 2)) for k, v in cur_data.items()], key=lambda tup: tup[0])
+            x, y = zip(*data)
+            fig.add_trace(go.Scatter(x=x,
+                                     y=y,
+                                     name=cur_name,
+                                     line=dict(color=colors[idx])))
+        fig.update_layout(showlegend=True, plot_bgcolor='rgba(0,0,0,0)')
+        fig.update_xaxes(showgrid=False, gridcolor='blue', title_text="Step", showline=True, linewidth=2, linecolor='black')
+        fig.update_yaxes(showgrid=False, gridcolor='red', title_text="Classified samples [%]", showline=True, linewidth=2, linecolor='black')
+        fig.update_layout(width=500, height=250,
+                          font=dict(family="Serif", size=14),
+                          margin_l=5, margin_t=5, margin_b=5, margin_r=5)
+        save_fig(fig, f"multiple_attributes_thresh_{cur_thresh}.png")
+
+
 if __name__ == '__main__':
-    # base_dir = "experiments/forget_all_celeba_only_model"
-    # out_dir = f"experiments/forget_all_celeba_only_model_stats"
-    # gather_runs_forget_statistics(base_dir, out_dir)
-    #
-    # forget_file = f"{out_dir}/forget_all_identities_statistics_mean.json"
-    # output_file = f"{out_dir}/forget_all_identities_statistics_mean.tex"
-    # get_paper_table_data(forget_file, output_file, avg_time_per_iter=4.73, baseline_n_iters=320000)
-    attributes = ['Blond_Hair', 'Male', 'Eyeglasses']
-    get_celeba_specific_attributes_stats(attributes_names=attributes)
+    exps = glob("experiments/forget_attributes_cls_only_thresh_*/*")
+    for exp in exps:
+        aggregate_attribute_cls_jsons(exp, save_file=True)
+    exps = glob("experiments/forget_attributes_cls_only_thresh_*")
+    plot_multiple_attributes(exps)
