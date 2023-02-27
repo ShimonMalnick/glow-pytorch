@@ -6,7 +6,7 @@ import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
 from os.path import join
-from typing import Union, List, Dict, Optional
+from typing import Union, List, Dict, Optional, Callable
 
 import torchvision
 from statsmodels.graphics.gofplots import qqplot
@@ -30,7 +30,7 @@ import torchvision.datasets as vision_datasets
 from torch.utils.data import DataLoader
 from arcface_model import Backbone
 from torchvision.models import resnet50
-
+from torch.multiprocessing import Process, set_start_method
 
 # Constants
 CELEBA_ROOT = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA"
@@ -71,6 +71,7 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument("--temp", help="temperature of sampling", type=float)
     parser.add_argument("--n_sample", help="number of samples", type=int)
     parser.add_argument("--ckpt_path", help='Path to checkpoint for model')
+    parser.add_argument("--dir_name", help='directory name (will be created under experiments), to store the current experiment')
     parser.add_argument("--opt_path", help='Path to checkpoint for optimizer')
     parser.add_argument("--path", metavar="PATH", help="Path to image directory")
     parser.add_argument('--eval', action='store_true', help='Use for evaluating a model', default=None)
@@ -87,6 +88,8 @@ def get_args(**kwargs) -> EasyDict:
             parser.add_argument('--forget_additional_attribute', help='additional attribute to forget', type=int)
             parser.add_argument('--debias', type=int,
                                 help='if 1, instead of forgetting the attribute, forget the opposite')
+            parser.add_argument('--cls_every', help='classify random latents every <cls_every> iterations', type=int)
+            parser.add_argument('--cls_n_samples', help='number of latents to randomly select for classification', type=int)
         elif kwargs.get('forget_group', False):
             parser.add_argument('--forget_group_size', help='size of Group to forget', type=int)
             parser.add_argument('--remember_group_size', help='size of the Group to forget', type=int)
@@ -376,6 +379,39 @@ def gather_jsons(in_paths, keys_names, out_path, add_duplicate_names=False) -> N
         json.dump(d, out_j, indent=4)
 
 
+def mean_float_jsons(jsons: List[str], save_path: str) -> dict:
+    out = {}
+    for json_f in jsons:
+        with open(json_f, "r") as f:
+            input_dict = json.load(f)
+        for k in input_dict:
+            if isinstance(input_dict[k], dict):
+                if k not in out:
+                    out[k] = {}
+                for k2 in input_dict[k]:
+                    if type(input_dict[k][k2]) == float:
+                        if k2 not in out[k]:
+                            out[k][k2] = []
+                        out[k][k2].append(input_dict[k][k2])
+                    else:
+                        raise ValueError(f"input_dict[{k}][{k2}] is not a float. currently supporting only jsons with 1 level of nesting that includes floats only")
+            elif type(input_dict[k]) == float:
+                if k not in out:
+                    out[k] = []
+                out[k].append(input_dict[k])
+            else:
+                raise ValueError(f"input_dict[{k}] is not a float. currently supporting only jsons with 1 level of nesting that includes floats only")
+    for k in out:
+        if isinstance(out[k], dict):
+            for k2 in out[k]:
+                out[k][k2] = sum(out[k][k2]) / len(out[k][k2])
+        else:
+            out[k] = sum(out[k]) / len(out[k])
+    if save_path:
+        save_dict_as_json(out, save_path)
+    return out
+
+
 def load_arcface(device=None) -> Backbone:
     model = Backbone(50, 0.6, 'ir_se').to('cpu')
     model.requires_grad_(False)
@@ -517,6 +553,20 @@ def data_parallel2normal_state_dict(dict_path: str, out_path: str):
     torch.save(new_state_dict, out_path)
 
 
+def identity2median_likelihood_images(identity, images_paths, num_images) -> List[str]:
+    assert num_images <= 15
+    if num_images > 1:
+        return [images_paths[i] for i in range(num_images)]
+    else:
+        median_range = [0.46, 0.54]
+        with open("models/baseline/continue_celeba/distribution_stats/valid_partial_10000/test_identities_quantiles/quantiles.json") as quantiles_json:
+            identity_quantiles = json.load(quantiles_json)[str(identity)]
+        for i in range(min(len(identity_quantiles), 15)):
+            if median_range[0] <= identity_quantiles[i] <= median_range[1]:
+                return [images_paths[i]]
+    raise ValueError(f"No median image for given identity: {identity}")
+
+
 def args2dset_params(args, ds_type) -> Dict:
     """
     Returns a dictionary of parameters to be passed to the dataset constructor.
@@ -540,7 +590,7 @@ def args2dset_params(args, ds_type) -> Dict:
     assert args.forget_size, "must specify forget_size"
     forget_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/forget"
     if ds_type == 'forget':
-        out["include_only_images"] = os.listdir(forget_images_directory)[:args.forget_size]
+        out["include_only_images"] = identity2median_likelihood_images(identity, os.listdir(forget_images_directory), args.forget_size)
     elif ds_type == 'remember':
         reference_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference"
         out["exclude_images"] = os.listdir(reference_images_directory) + os.listdir(forget_images_directory)
@@ -631,14 +681,19 @@ def plot_qqplot(dist_samples: Union[torch.Tensor, np.ndarray], save_path: str):
     plt.close('all')
 
 
-def images2video(images: Union[str, List[str]], video_path: str, fps=5):
+def images2video(images: Union[str, List[str], List[np.ndarray]], video_path: str, fps=5):
+    already_numpy = False
     if isinstance(images, str):
         images = glob(join(images, "*"))
-    elif not isinstance(images, list):
+    elif isinstance(images, list):
+        assert len(images) > 0, f"requires at least one image but got len(images) = {len(images)}"
+        if isinstance(images[0], np.ndarray):
+            already_numpy = True
+    else:
         raise ValueError("images must be either str or list")
     writer = imageio.get_writer(video_path, fps=fps)
     for im in images:
-        writer.append_data(imageio.imread(im))
+        writer.append_data(im if already_numpy else imageio.imread(im))
     writer.close()
 
 
@@ -754,3 +809,21 @@ def load_fairface_model(model_path: Optional[str] = FAIRFACE_CKPT_PATH, device=N
     else:
         model_fair_7.eval()
     return model_fair_7
+
+
+def multiprocess_func(func: Callable, args_list: List[tuple], add_devices=False):
+    if add_devices:
+        n_devices = torch.cuda.device_count()
+        assert len(args_list) <= n_devices
+        for i, cur_args in enumerate(args_list):
+            assert isinstance(cur_args, tuple)
+            args_list[i] = cur_args + (torch.device(f"cuda:{i}"),)
+
+    set_start_method('spawn')
+    procs = []
+    for arg in args_list:
+        p = Process(target=func, args=arg)
+        procs.append(p)
+        p.start()
+    for p in procs:
+        p.join()
