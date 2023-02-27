@@ -2,8 +2,8 @@ import json
 import os
 import re
 from glob import glob
-from typing import Union, List, Dict, Optional
-
+from typing import Union, List, Dict, Optional, Callable
+from pdb import set_trace
 import numpy as np
 import plotly
 import wandb
@@ -70,10 +70,10 @@ def compute_attribute_step_stats(args: EasyDict,
                    "eval_std": args.eval_std,
                    "forget_distance": forget_signed_distance},
                   commit=False)
-        if generate_samples:
+        # if generate_samples:
             # to generate images using the reverse function, we need the module itself from the DataParallel wrapper
-            generate_random_samples(model.module, sampling_device, args,
-                                    f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
+            # generate_random_samples(model.module, sampling_device, args,
+            #                         f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
         return forget_bpd
 
     return torch.tensor([0], dtype=torch.float)
@@ -83,11 +83,15 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
                      model: Union[Glow, torch.nn.DataParallel],
                      original_model: Glow,
                      training_devices: List[torch.device],
+                     output_device: torch.device,
                      original_model_device: torch.device,
                      optimizer: torch.optim.Optimizer,
-                     generate_samples: bool = True):
+                     generate_samples: bool = True,
+                     const_latents=None):
     kl_loss_fn = get_kl_loss_fn(args.loss)
     sigmoid = torch.nn.Sigmoid()
+    cls = load_cls(device=original_model_device)
+    cls_transform = get_resnet_50_normalization()
     main_device = torch.device(f"cuda:{training_devices[0]}")
     n_bins = 2 ** args.n_bits
     n_pixels = args.img_size * args.img_size * 3
@@ -117,7 +121,9 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
+        if args.n_sample:
+            # for debugging runs without saving images
+            save_model_images(model, f'experiments/{args.exp_name}/images/{i + 1}', args.n_sample, const_latents, temp=args.temp)
         cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds,
                                                       training_devices[0], generate_samples=generate_samples)
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
@@ -130,6 +136,21 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
 
         if args.save_every is not None and (i + 1) % args.save_every == 0:
             save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
+        if (i == 0) or (i + 1) % args.cls_every == 0:
+            cur_latents = get_model_latents(args.img_size, args.n_flow, args.n_block, args.cls_n_samples, args.temp, output_device)
+            with torch.no_grad():
+                bs = 256
+                assert not args.cls_n_samples % bs, f"args.cls_n_samples needs to be divisible by {bs}"
+                cur_images = None
+                for idx in range(args.cls_n_samples // bs):
+                    cur_batch = [latent[bs * idx:bs * (idx + 1)] for latent in cur_latents]
+                    if not idx:
+                        cur_images = model.module.reverse(cur_batch, reconstruct=False)
+                    else:
+                        cur_images = torch.cat([cur_images, model.module.reverse(cur_batch, reconstruct=False)])
+            evaluate_random_samples_classification(cur_images.to(original_model_device), f"experiments/{args.exp_name}/cls/{i+1}.json",
+                                                   device=original_model_device, cls=cls, cls_transform=cls_transform, sigmoid=sigmoid)
+
     if args.save_every is not None:
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
 
@@ -181,23 +202,28 @@ def generate_random_samples(model, device, args, save_path, temp=0.5, n_samples=
     return all_images
 
 
-def evaluate_random_samples_classification(samples_file: Union[str, torch.Tensor],
+@torch.no_grad()
+def evaluate_random_samples_classification(samples: Union[str, torch.Tensor],
                                            out_path: str,
-                                           device: Optional[torch.device] = None, combine_attributes=None, cls=None):
-    if isinstance(samples_file, str):
-        samples = torch.load(samples_file)
-    elif isinstance(samples_file, torch.Tensor):
-        samples = samples_file
-    else:
+                                           device: Optional[torch.device] = None,
+                                           combine_attributes=None,
+                                           cls=None,
+                                           cls_transform=None,
+                                           sigmoid=None):
+    if isinstance(samples, str):
+        samples = torch.load(samples)
+    elif not isinstance(samples, torch.Tensor):
         raise ValueError("samples_file should be either str or torch.Tensor")
-    sigmoid = torch.nn.Sigmoid()
+    if sigmoid is None:
+        sigmoid = torch.nn.Sigmoid()
     if cls is None:
         cls = load_cls(device=device)
-    cls_transform = get_resnet_50_normalization()
+    if cls_transform is None:
+        cls_transform = get_resnet_50_normalization()
     samples = cls_transform(samples + 0.5)
-    with torch.no_grad():
-        samples = samples.to(device)
-        y_hat = sigmoid(cls(samples))
+    samples = samples.to(device)
+    y_hat = sigmoid(cls(samples))
+
     pred = torch.sum(y_hat > 0.5, dim=0)
     out = {}
     if combine_attributes is not None:
@@ -213,17 +239,27 @@ def evaluate_random_samples_classification(samples_file: Union[str, torch.Tensor
     return out
 
 
+def get_model_latents(img_size, n_flow, n_block, n_sample, temp, device) -> List[torch.Tensor]:
+    z_shapes = calc_z_shapes(3, img_size, n_flow, n_block)
+    latents = []
+    for shape in z_shapes:
+        latents.append(torch.randn(n_sample, *shape, device=device) * temp)
+    return latents
+
+
 def main():
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True, forget_attribute=True)
     all_devices = list(range(torch.cuda.device_count()))
     train_devices = all_devices[:-1]
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
-    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name="forget_attributes_thresh_1")
+    dir_name = "forget_attributes" if not args.dir_name else args.dir_name
+    args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name=dir_name)
     os.makedirs(f"experiments/{args.exp_name}/random_samples")
+    os.makedirs(f"experiments/{args.exp_name}/cls")
     logging.info(args)
-    model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
-                                              output_device=train_devices[0])
+    output_device = torch.device(f"cuda:{train_devices[0]}")
+    model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices, output_device=output_device)
     original_model: Glow = load_model(args, device=original_model_device, training=False)
     original_model.requires_grad_(False)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
@@ -253,9 +289,13 @@ def main():
     compute_attribute_step_stats(args, 0, model, None, remember_ds, forget_ds, train_devices[0], init=True)
     logging.info("Starting forget attribute procedure")
     generate_samples = False
+    latents = get_model_latents(args.img_size, args.n_flow, args.n_block, args.n_sample, args.temp, output_device)
+    if args.n_sample:
+        save_model_images(model, f'experiments/{args.exp_name}/images/0', args.n_sample, latents, temp=args.temp)
     forget_attribute(args, remember_ds, forget_ds, model,
-                     original_model, train_devices, original_model_device,
-                     forget_optimizer, generate_samples=generate_samples)
+                     original_model, train_devices, output_device, original_model_device,
+                     forget_optimizer, generate_samples=generate_samples, const_latents=latents)
+    image_folders_to_grid_video(f'experiments/{args.exp_name}', n_images=16, nrow=4)
 
 
 @torch.no_grad()
@@ -363,8 +403,24 @@ def plot_multiple_attributes(files: List[str],
 
 
 @torch.no_grad()
-def save_images_along_models(exp_dir, n_imgs: int = 64, device=None, temp=0.5):
-    latents = []
+def save_model_images(
+        model: Union[torch.nn.DataParallel, Glow],
+        out_dir: str,
+        n_imgs: int,
+        latents: List[torch.Tensor],
+        temp: float = 0.5):
+    if isinstance(model, torch.nn.DataParallel):
+        model = model.module
+    os.makedirs(out_dir, exist_ok=True)
+    cur_images = model.reverse(latents, reconstruct=False) + 0.5
+    cur_images = cur_images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
+    for i in range(n_imgs):
+        im = Image.fromarray(cur_images[i])
+        im.save(os.path.join(out_dir, f"temp_{int(temp * 10)}_sample_{i}.png"))
+
+
+@torch.no_grad()
+def save_images_along_models(exp_dir, n_imgs: int = 64, device=None, temp=0.5, latents=None):
     with open(f"{exp_dir}/args.json") as input_j:
         args = EasyDict(json.load(input_j))
     z_shapes = calc_z_shapes(3, args.img_size, args.n_flow, args.n_block)
@@ -372,8 +428,10 @@ def save_images_along_models(exp_dir, n_imgs: int = 64, device=None, temp=0.5):
     os.makedirs(f"{exp_dir}/constant_images", exist_ok=True)
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    for shape in z_shapes:
-        latents.append(torch.randn(n_imgs, *shape, device=device) * temp)
+    if latents is None:
+        latents = []
+        for shape in z_shapes:
+            latents.append(torch.randn(n_imgs, *shape, device=device) * temp)
     for model_p in models:
         model_name = model_p.split("/")[-1][:-3]
         os.makedirs(f"{exp_dir}/{model_name}", exist_ok=True)
@@ -387,99 +445,23 @@ def save_images_along_models(exp_dir, n_imgs: int = 64, device=None, temp=0.5):
         del model
 
 
-def image_folders_to_grid_video(base_dir, n_images=16, nrow=4, out_path=''):
-    dir_list = os.listdir(base_dir)
+def image_folders_to_grid_video(exp_dir, n_images=16, nrow=4, out_path=''):
+    dir_list = os.listdir(f"{exp_dir}/images")
     if not out_path:
-        out_path = f"{base_dir}/vid.mp4"
-    # grid_images_out_dir = f"{base_dir}/grid_images"
-    # os.makedirs(grid_images_out_dir, exist_ok=True)
-    pattern = r"model_(\d+)"
-    dir_list = [d for d in dir_list if re.match(pattern, d)]
-    dir_list.sort(key=lambda d: int(re.match(pattern, d).group(1)))
+        out_path = f"{exp_dir}/vid.mp4"
+    dir_list.sort(key=lambda dir_name: int(dir_name))
     pil_to_tens = ToTensor()
     vid_images = []
     for d in dir_list:
-        cur_images = os.listdir(f"{base_dir}/{d}")
+        cur_images = os.listdir(f"{exp_dir}/images/{d}")
         cur_images.sort(key=lambda name: int(name.replace("temp_5_sample_", "").replace(".png", "")))
         cur_images = cur_images[:n_images]
-        cur_images = torch.stack([pil_to_tens(Image.open(f"{base_dir}/{d}/{im}")) for im in cur_images])
+        cur_images = torch.stack([pil_to_tens(Image.open(f"{exp_dir}/images/{d}/{im}")) for im in cur_images])
         cur_grid_image = make_grid(cur_images, nrow=nrow).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
         vid_images.append(cur_grid_image)
-    images2video(vid_images, video_path=out_path, fps=5)
+    images2video(vid_images, video_path=out_path, fps=25)
 
 
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     main()
-
-    # exps = glob(f"experiments/forget_attributes_thresh_1/*/cls_scores.json")
-    #
-    # base_d = "experiments/forget_attributes_thresh_1/forget_Brown_Hair"
-    # image_folders_to_grid_video(base_d)
-
-    # files = glob(f"experiments/forget_attributes_thresh_1/*/cls_scores.json")
-    # attr2idx = {v: k for k, v in CELEBA_ATTRIBUTES_MAP.items()}
-    # names = [f.split("/")[-2].replace("forget_", "") for f in files]
-    # indices = [attr2idx[name] for name in names]
-    # plot_multiple_attributes(files, indices, save_path='tmp.png')
-
-    # files = glob(f"experiments/forget_attributes_thresh_1/*/random_samples*/*.json")
-    # relevant_exps = [CELEBA_ATTRIBUTES_MAP[i].lower() for i in [24, 21, 11, 18, 1]]
-    # rel_files = []
-    # names = []
-    # for f in files:
-    #     name = f.split("/")[-3]
-    #     if not name[7:] in relevant_exps:
-    #         continue
-    #     with open(f"experiments/forget_attributes_2/{name}/args.json", "r") as in_config:
-    #         args = json.load(in_config)
-    #     names.append(args["forget_attribute"])
-    #     rel_files.append(f)
-    # plot_multiple_attributes(rel_files, names)
-
-    # generate faces of different models
-    # exps_base = "experiments/forget_children"
-    # exps_dirs = glob(f"{exps_base}/*")
-    # exps_dirs = ["experiments/supp/forget_valid"]
-    # exps_dirs = ["experiments/forget_children/forget_20"]
-    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # for exp_dir in exps_dirs:
-    #     if not os.path.isfile(f"{exp_dir}/checkpoints/model_last.pt"):
-    #         print(f"Skipping {exp_dir}, no last checkpoint")
-    #         continue
-    #     os.makedirs(f"{exp_dir}/generated_images", exist_ok=True)
-        # generate_random_samples(model, device, args, f"{exp_dir}/generated_samples", n_samples=256)
-        # save_random_samples(exp_dir, f"{exp_dir}/checkpoints/model_last.pt", f"{exp_dir}/generated_images",
-        #                     num_samples=128, with_baseline=False)
-    # exp_dir = "experiments/forget_attributes_2/forget_blond_hair"
-    # save_random_samples(exp_dir, f"{exp_dir}/checkpoints/model_last.pt", f"{exp_dir}/generated_images", num_samples=128, with_baseline=False)
-    # cur_dir = "experiments/forget_attributes_2/debias_male_w_blond_hair_intersection"
-    # samples = glob(f"{cur_dir}/random_samples/*.pt")
-    # for sample in samples:
-    #     evaluate_random_samples_classification(sample, sample.replace(".pt", "_cls.json"), combine_attributes=[[20, 9]],
-    #                                            device=torch.device("cuda:0"))
-
-    # models = glob(f"{cur_dir}/checkpoints/*.pt")
-    # with open("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/experiments/forget_attributes_2/debias_male_w_blond_hair/args.json", "r") as args_f:
-    #     args = json.load(args_f)
-    # args = EasyDict(args)
-    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # for model in models[:-1]:
-    #     args.ckpt_path = model
-    #     cur_name = int(re.match(r".*model_(\d+).pt", model).group(1))
-    #     model = load_model(args, device, training=False)
-    #     generate_random_samples(model, device, args, f"{cur_dir}/random_samples/step_{cur_name}.pt")
-    # cpu_device = torch.device("cpu")
-    # pt_files = glob(f"{cur_dir}/random_samples/*.pt")
-    # # pt_files = [f"{cur_dir}/random_samples/step_101.pt"]
-    # # pt_files = glob(f"{cur_dir}/random_samples/step_229.pt")
-    # os.makedirs(f"{cur_dir}/generated_images", exist_ok=True)
-    # print(pt_files)
-    # for pt_file in pt_files:
-    #     cur_name = pt_file.split("/")[-1].split(".")[0]
-    #     cur_images = torch.load(pt_file, map_location=cpu_device)[:16]
-    #     cur_images += 0.5
-    #     cur_images = cur_images.mul(255).clamp_(0, 255).permute(0, 2, 3, 1).to("cpu", torch.uint8).numpy()
-    #     for i in range(cur_images.shape[0]):
-    #         im = Image.fromarray(cur_images[i])
-    #         im.save(os.path.join(f"{cur_dir}/generated_images", f"{cur_name}_sample_{i}.png"))
