@@ -964,94 +964,6 @@ def dir_to_weights_examine(dir_path, save_path=''):
     examine_weights_diff(base_model_args, models_args, save_path, out_dict=out)
 
 
-def compute_nn_scores(exp_dirs, device=None, reps=10):
-    with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
-        identity2indices = json.load(f)
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    transform = get_default_forget_transform(128, 5)
-    ds = CelebA(CELEBA_ROOT, transform=transform)
-    for exp_dir in exp_dirs:
-        exp_reg = re.match(r".*/(\d+)_image_id_(\d+)", exp_dir)
-        n_images, identity = int(exp_reg.group(1)), int(exp_reg.group(2))
-        nearest_neighbor_f = f"outputs/celeba_stats/{identity}_similarities.json"
-        with open(nearest_neighbor_f, 'r') as f:
-            nearest_neighbors = json.load(f)
-        nn = list(nearest_neighbors.keys())[-1]
-        cur_ds = Subset(ds, identity2indices[str(nn)])
-        cur_data = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
-        data_sources = {f"nn_id_{identity}_{nn}": cur_data}
-        evaluate_model_on_data(data_sources, exp_dir, eval_base=True, save_dir=f"{exp_dir}/nearest_neighbor", device=device, reps=reps)
-        print(f"Computed forget values for identity {identity} with {n_images} images")
-
-
-def compute_nn_json(base_path, out_path='outputs/nn_base_results.json'):
-    num_images = [1, 4, 8, 15]
-    out = {}
-    for n in num_images:
-        nn_files = glob(f"{base_path}/*{n}_image_id_*/nearest_neighbor/valid_partial_10000/forget_info_quantiles.json")
-        cur_tamed, cur_base = 0, 0
-        for f in nn_files:
-            with open(f, "r") as cur_f:
-                d = json.load(cur_f)
-                for k in d:
-                    cur_val = d[k] / len(nn_files)
-                    if 'base' in k:
-                        cur_base += cur_val
-                    else:
-                        cur_tamed += cur_val
-        out[n] = {'base': cur_base, 'tamed': cur_tamed}
-    save_dict_as_json(out, out_path)
-
-
-def evaluate_unseen_identities(exps_dirs, eval_base=True, n_identities=5, device=None, reps=10):
-    eval_identities = OUT_OF_TRAINING_IDENTITIES[:n_identities]
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    transform = get_default_forget_transform(128, 5)
-    data_sources = {}
-    for identity in eval_identities:
-        ds_params = {'split': 'all'}
-        ds_params['include_only_identities'] = [identity]
-        cur_ds = get_partial_dataset(transform=transform, **ds_params)
-        data_sources[f"neutral_id_{identity}"] = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
-
-    for exp in exps_dirs:
-        with open(f"{exp}/args.json") as args_j:
-            args = json.load(args_j)
-        assert not args['data_split'] == 'valid', f"currently can't add neutral ids to validation set, exp={exp}"
-        os.makedirs(f"{exp}/neutral_identities", exist_ok=True)
-        evaluate_model_on_data(data_sources, exp, eval_base=eval_base, save_dir=f"{exp}/neutral_identities", device=device, reps=reps)
-        print(f"Computed forget values for exp {exp}")
-
-
-def accumulate_neutral_identities_jsons(jsons: Union[List[str], List[dict]], save_path: str = '', mean_keys_pattern='base') -> dict:
-    jsons = validate_non_empty_json_list(jsons)
-    scores = {k: [v] for k, v in jsons[0].items()}
-    res_keys_set = set(scores.keys())
-    for cur_dict in jsons[1:]:
-        assert res_keys_set == set(cur_dict.keys())
-        for k in cur_dict:
-            scores[k].append(cur_dict[k])
-    scores = {k: sum(v) / len(v) for k, v in scores.items()}
-    if mean_keys_pattern is not None:
-        res = {}
-        in_vals = []
-        out_vals = []
-        for k in scores:
-            if mean_keys_pattern in k:
-                in_vals.append(scores[k])
-            else:
-                out_vals.append(scores[k])
-        res[f'neutral_mean_{mean_keys_pattern}'] = sum(in_vals) / len(in_vals)
-        res[f'neutral_mean_excluding_{mean_keys_pattern}'] = sum(out_vals) / len(out_vals)
-    else:
-        res = {k: sum(v) / len(v) for k, v in scores.items()}
-    if save_path:
-        save_dict_as_json(res, save_path)
-    return res
-
-
 def validate_non_empty_json_list(jsons) -> List[dict]:
     assert jsons, "jsons must be a non empty list"
     if isinstance(jsons[0], str):
@@ -1065,41 +977,37 @@ def validate_non_empty_json_list(jsons) -> List[dict]:
     return jsons
 
 
-def accumulate_nearest_neighbor_jsons(jsons: Union[List[str], List[dict]], out_path='', mean_keys_pattern='base') -> dict:
-    jsons = validate_non_empty_json_list(jsons)
-    res = {'nn_base': 0.0, 'nn_tamed': 0.0}
-    n = len(jsons)
-    for cur_dict in jsons:
-        assert len(cur_dict) == 2 and any(['base' in k for k in cur_dict.keys()]) and \
-               not all(['base' in k for k in cur_dict.keys()]),\
-            "Expected a dictionary with 2 keys, one contanining the word base and one that does not."
-        for k in cur_dict:
-            if 'base' in k:
-                res['nn_base'] += cur_dict[k] / n
+def accumulate_helper(data_dicts: List[dict]) -> dict:
+    assert data_dicts, "expecting data_dicts as a non empty list of dictionaries"
+    out = {}
+    n = len(data_dicts)
+    nn_len = len([k for d in data_dicts for k in d if isinstance(k, str) and "nn" in k])
+    neutral_identities_len = len([k for d in data_dicts for k in d if isinstance(k, str) and "neutral" in k])
+    for d in data_dicts:
+        for k, v in d.items():
+            if isinstance(v, dict):
+                out[k] = accumulate_helper([v])
+            elif "nn" in k:
+                out['nn_mean'] = out.get('nn_mean', 0.0) + (v / nn_len)
+            elif "neutral" in k:
+                out['neutral_mean'] = out.get('neutral_mean', 0.0) + (v / neutral_identities_len)
+            elif "mean" in k:
+                out[k] = out.get(k, 0.0) + (v / n)
             else:
-                res['nn_tamed'] += cur_dict[k] / n
-    if out_path:
-        save_dict_as_json(res, out_path)
-
-    return res
+                raise ValueError("Dictionary not in expected format")
+    return out
 
 
-def create_total_accumulated_jsons(base_dir, out_dir, split='valid'):
+def create_table_data(base_dir: str, out_dir, split='valid'):
     os.makedirs(f"{out_dir}", exist_ok=True)
     for n in [1, 4, 8, 15]:
-        out = {}
-        rel_quants = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forg*quan*.json")
-        rel_neutral = glob(f"{base_dir}/{n}_image_id_*/neutral*/valid*/forg*quan*.json")
-        rel_nn = glob(f"{base_dir}/{n}_image_id_*/nearest*//valid*/forg*quan*.json")
-
-        rel_quants = mean_float_jsons(rel_quants, '')
-        out.update(rel_quants)
-
-        neutrals = accumulate_neutral_identities_jsons(rel_neutral, mean_keys_pattern='base')
-        out.update(neutrals)
-
-        rel_nn = accumulate_nearest_neighbor_jsons(rel_nn, mean_keys_pattern='base')
-        out.update(rel_nn)
+        jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forg*quan*.json")
+        relevant_data_dicts = []
+        for j in jsons_paths:
+            with open(j) as f:
+                relevant_data_dicts.append({k: (v if not isinstance(v, dict) else {k2: v2 for k2, v2 in v.items() if "mean" in k2})
+                                            for k, v in json.load(f).items() if "mean" in k or isinstance(v, dict)})
+        out = accumulate_helper(relevant_data_dicts)
         save_dict_as_json(out, f"{out_dir}/{n}.json")
 
 
@@ -1108,7 +1016,7 @@ def compute_forgetting_factor(theta_b, theta_t, forget_diff):
 
 
 class TableRow:
-    def __init__(self, n_images, json_p, precision=2):
+    def __init__(self, n_images, json_p, precision=2, verbose=False):
         if isinstance(json_p, str):
             with open(json_p) as input_j:
                 data = json.load(input_j)
@@ -1122,13 +1030,15 @@ class TableRow:
         self.forget_diff = self.forget_base - self.forget_tamed
         self.forget_ref = compute_forgetting_factor(data['base']['ref_forget_identity_mean'], data['ref_forget_identity_mean'], self.forget_diff)
         self.remember = compute_forgetting_factor(data['base']['ref_random_mean'], data['ref_random_mean'], self.forget_diff)
-        self.neutral = compute_forgetting_factor(data['neutral_mean_base'], data['neutral_mean_excluding_base'], self.forget_diff)
-        self.nn = compute_forgetting_factor(data['nn_base'], data['nn_tamed'], self.forget_diff)
+        self.neutral = compute_forgetting_factor(data['base']['neutral_mean'], data['neutral_mean'], self.forget_diff)
+        self.nn = compute_forgetting_factor(data['base']['nn_mean'], data['nn_mean'], self.forget_diff)
         self.precision = precision
+        self.verbose = verbose
 
     def __str__(self):
+        print_str = '' if not self.verbose else f"forget: base: {self.forget_base:.{self.precision}} tamed: {self.forget_tamed:.{self.precision}}\n"
         print_order = [self.forget_base, self.forget_tamed, self.forget_ref, self.remember, self.neutral, self.nn]
-        print_str = f"{self.n_images}&"
+        print_str += f"{self.n_images}&"
         for idx, cur_num in enumerate(print_order):
             if abs(cur_num) < (10 ** (-1 * self.precision)):
                 print_str += f"{0:.{self.precision}f}"
@@ -1141,12 +1051,12 @@ class TableRow:
         return print_str
 
 
-def print_new_table(input_files_dir: str, save_path=''):
+def print_new_table(input_files_dir: str, save_path='', verbose=False):
     n_images = [1, 4, 8, 15]
     assert os.path.isdir(input_files_dir) and all([os.path.isfile(f"{input_files_dir}/{n}.json") for n in n_images])
     rows = []
     for n in n_images:
-        rows.append(TableRow(n, f"{input_files_dir}/{n}.json"))
+        rows.append(TableRow(n, f"{input_files_dir}/{n}.json", verbose=verbose))
     if save_path:
         with open(save_path, "w") as out_file:
             out_file.writelines([str(row) + "\n" for row in rows])
@@ -1182,16 +1092,15 @@ if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    exps = glob("experiments/forget_identity_thresh_main_thresh_1/*")
-    for exp in exps:
-        compare_forget_values(exp, device=device)
-    # exps.sort(reverse=True)
-    # files = glob("experiments/forget_identity_main_thresh_4/15_image_*/distri*/valid*/forget_quanti*.json")
-    # jsons = []
+    # exps = glob("experiments/forget_identity_thresh_4_on_server/1_image*")
+
+    jsons = []
     # for f in files:
     #     with open(f) as cur_f:
     #         jsons.append(json.load(cur_f))
     # pdb.set_trace()
-    # base_d = "experiments/forget_identity_main_thresh_4"
-    # create_total_accumulated_jsons(base_d, out_dir='outputs/forget_identity_thresh_4')
 
+
+    base_d = "experiments/forget_identity_thresh_4_on_server"
+    create_table_data(base_d, out_dir='outputs/forget_identity_thresh_4')
+    print_new_table('outputs/forget_identity_thresh_4', "outputs/table.txt", verbose=False)
