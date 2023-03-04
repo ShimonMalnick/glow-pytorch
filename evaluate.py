@@ -354,7 +354,7 @@ def compute_model_distribution(exp_dir, args=None, partial=-1, **kwargs):
         with open(f"{exp_dir}/args.json", 'r') as f:
             args = EasyDict(json.load(f))
     if 'base' in kwargs:
-        args.ckpt_path = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/model_090001_single.pt"
+        args.ckpt_path = "models/baseline/continue_celeba/model_090001_single.pt"
     elif 'ckpt_path' in kwargs:
         args.ckpt_path = kwargs['ckpt_path']
     else:
@@ -484,15 +484,15 @@ def make_histograms_video(exp_dir):
 
 def full_experiment_evaluation(exp_dir: str, args, **kwargs):
     compute_model_distribution(exp_dir, args, **kwargs)
-    base_model_dir = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/distribution_stats"
-    evaluate_forget_score(exp_dir, **kwargs)
-    # for split in ['train', 'valid']:
-    #     plot_2_histograms_distributions(f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.pt",
-    #                                     f"{base_model_dir}/{split}_partial_10000/nll_distribution.pt",
-    #                                     f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.svg")
+    if 'histogram' in kwargs:
+        base_model_dir = "models/baseline/continue_celeba/distribution_stats"
+        for split in ['train', 'valid']:
+            plot_2_histograms_distributions(f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.pt",
+                                            f"{base_model_dir}/{split}_partial_10000/nll_distribution.pt",
+                                            f"{exp_dir}/distribution_stats/{split}_partial_10000/nll_distribution.svg")
     compare_forget_values(exp_dir, reps=10, split='valid', partial=10000)
-    compute_nn_scores([exp_dir], device=None, reps=10)
-    evaluate_unseen_identities([exp_dir], eval_base=True, n_identities=5, device=None, reps=10)
+    # compute_nn_scores([exp_dir], device=None, reps=10)
+    # evaluate_unseen_identities([exp_dir], eval_base=True, n_identities=5, device=None, reps=10)
     # make_histograms_video(exp_dir)
 
 
@@ -503,7 +503,7 @@ def nll_to_dict(nll_tensor: torch.Tensor, rounding=2) -> Dict:
 
 def compute_baseline_forget_stats(reps=10):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    with open("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba/args.json", "r") \
+    with open("models/baseline/continue_celeba/args.json", "r") \
             as args_f:
         args = edict(json.load(args_f))
     args.ckpt_path = BASE_MODEL_PATH
@@ -521,7 +521,7 @@ def compute_baseline_forget_stats(reps=10):
     nll_tuples = get_model_nll_on_multiple_data_sources(model, device, datasets, n_bins=2 ** args.n_bits, reps=reps)
     nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in nll_tuples}
     save_dict_as_json(nll_dict,
-                      "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
+                      "models/baseline/continue_celeba"
                       "/forget_stats/results.json")
 
 
@@ -559,7 +559,7 @@ def get_baseline_relative_distance(forget_size, split='valid', partial=10000, ra
     TOTAL_FORGET_IMAGES = 15  # for the experiments i'm running these are constant values
     TOTAL_REF_IMAGES = 14
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
-    baseline_base = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba"
+    baseline_base = "models/baseline/continue_celeba"
     with open(f"{baseline_base}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as baseline_f:
         baseline_distribution = json.load(baseline_f)['nll']
     baseline_mean, baseline_std = baseline_distribution['mean'], baseline_distribution['std']
@@ -604,12 +604,8 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000, device
     forget_images = torch.stack([forget_ds[i][0] for i in range(args.forget_size)]).to(device)
     data_sources = {"forget": forget_images}
 
-    # next, we compare to the images of the same identity but not trained on. This consists of the remaining images
-    # from the images to forget (if we tried to forget 3 out of 15 images, then these are the remaining 12) and the
-    # holdout set (second)
+    # next, we compare to reference images of the same identity (a holdout set of the given identity)
     ref_forget_images = []
-    # if args.forget_size < len(forget_ds):
-    #     ref_forget_images.extend([forget_ds[i][0] for i in range(args.forget_size, len(forget_ds))])
 
     same_id_ref_ds = args2dataset(args, "forget_ref", transform)
     ref_forget_images.extend([same_id_ref_ds[i][0] for i in range(len(same_id_ref_ds))])
@@ -622,23 +618,40 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000, device
     ref_ds = Subset(ref_ds, np.random.choice(len(ref_ds), 100, replace=False))
     data_sources["ref_random"] = ref_ds
 
-    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps,
-                                                               n_bins=2 ** args.n_bits)
-    nll_dict = {ds_name: nll_to_dict(nll_tensor) for ds_name, nll_tensor in raw_data_nll_dict.items()}
-    save_dict_as_json(nll_dict, f"{exp_dir}/distribution_stats/forget_results.json")
+    #add nearest neighbor data
+    assert args.data_split == 'train'
+    with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
+        identity2indices = json.load(f)
+    ds = CelebA(root=CELEBA_ROOT, split='train', transform=transform)
+    nearest_neighbor_f = f"outputs/celeba_stats/{args.forget_identity}_similarities.json"
+    with open(nearest_neighbor_f, 'r') as f:
+        nearest_neighbors = json.load(f)
+    nn = list(nearest_neighbors.keys())[-1]
+    cur_ds = Subset(ds, identity2indices[str(nn)])
+    cur_data = torch.stack([cur_ds[i][0] for i in range(len(cur_ds))]).to(device)
+    data_sources[f"nn_id_{args.forget_identity}_{nn}"] = cur_data
+
+    # # add neutral identities (out of train set)
+    num_ids_per_set = 5
+    ids_from_unseen_set = OUT_OF_TRAINING_IDENTITIES[:num_ids_per_set]
+    ds_params = {'split': 'all'}
+
+    for i in range(num_ids_per_set):
+        ds_params['include_only_identities'] = [ids_from_unseen_set[i]]
+        cur_ds = get_partial_dataset(transform=transform, **ds_params)
+        data_sources[f"neutral_unseen_{i}"] = cur_ds
+
+
+    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps, n_bins=2 ** args.n_bits)
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
     with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         trained_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
     quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, trained_mean, trained_std), return_torch=False) for ds_name, nll_tensor in raw_data_nll_dict.items()}
-    quantiles.update({ds_name + "_mean": sum(quants) / len(quants) for ds_name, quants in quantiles.items()})
-    # sigma_normalized_results = {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
-    #                             for ds_name, nll_tensor in raw_data_nll_dict.items()}
-    # forget_images_nlls = raw_data_nll_dict["forget"].tolist()
-    # sigma_normalized_results["forget_thresholds_values"] = \
-    #     {i: nll_to_sigma_normalized(forget_images_nlls[i], trained_mean, trained_std)
-    #      for i in range(len(forget_images_nlls))}
+    quantiles.update({ds_name + "_mean": (sum(quants) / len(quants) if hasattr(quants, "__iter__") else quants) for ds_name, quants in quantiles.items()})
 
+
+    # now evaluating all these data sources on the base model
     with open(f"models/baseline/continue_celeba/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         base_model_distribution = json.load(f)['nll']
     base_mean, base_std = base_model_distribution['mean'], base_model_distribution['std']
@@ -648,25 +661,10 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000, device
     base_raw_data_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, data_sources, reps=reps,
                                                                n_bins=2 ** args.n_bits)
     base_quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, base_mean, base_std), return_torch=False) for ds_name, nll_tensor in base_raw_data_nll_dict.items()}
-    base_quantiles.update({ds_name + "_mean": sum(quants) / len(quants) for ds_name, quants in base_quantiles.items()})
+    base_quantiles.update({ds_name + "_mean": (sum(quants) / len(quants)) if hasattr(quants, "__iter__") else quants for ds_name, quants in base_quantiles.items()})
 
     quantiles["base"] = base_quantiles
     save_dict_as_json(quantiles, f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_quantiles.json")
-    # base_sigma_normalized_results = {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), base_mean, base_std)
-    #                             for ds_name, nll_tensor in base_raw_data_nll_dict.items()}
-    # base_forget_images_nlls = base_raw_data_nll_dict["forget"].tolist()
-    # base_sigma_normalized_results["forget_thresholds_values"] = \
-    #     {i: nll_to_sigma_normalized(base_forget_images_nlls[i], base_mean, base_std)
-    #      for i in range(len(base_forget_images_nlls))}
-
-
-    # baseline_results_dict = get_baseline_relative_distance(args.forget_size, split, partial, random_ds=ref_ds,
-    #                                                        device=device, reps=reps)
-    # sigma_normalized_results['baseline'] = base_sigma_normalized_results
-    # save_dict_as_json(sigma_normalized_results,
-    #                   f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json")
-    # relative_forget2quantiles(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_info.json",
-    #                           f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_quantiles.json")
 
 
 def get_base_model_score_on_neutral_ids(save_path, num_ids_per_set=5, reps=10, partial=10000):
@@ -828,7 +826,7 @@ def relative_forget2quantiles(json_f: Union[str, dict], save_path: str, save=Tru
 
 
 def get_identity_attributes_stats(identity: int):
-    with open("/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/celeba_stats/identity2indices.json", "r") as in_f:
+    with open("outputs/celeba_stats/identity2indices.json", "r") as in_f:
         identity2indices = json.load(in_f)
     assert str(identity) in identity2indices, f"identity {identity} is not in the training set of CelebA"
     ds = CelebA(root=CELEBA_ROOT, transform=None, target_type='attr', split='train')
@@ -976,7 +974,7 @@ def compute_nn_scores(exp_dirs, device=None, reps=10):
     for exp_dir in exp_dirs:
         exp_reg = re.match(r".*/(\d+)_image_id_(\d+)", exp_dir)
         n_images, identity = int(exp_reg.group(1)), int(exp_reg.group(2))
-        nearest_neighbor_f = f"/a/home/cc/students/cs/malnick/thesis/glow-pytorch/outputs/celeba_stats/{identity}_similarities.json"
+        nearest_neighbor_f = f"outputs/celeba_stats/{identity}_similarities.json"
         with open(nearest_neighbor_f, 'r') as f:
             nearest_neighbors = json.load(f)
         nn = list(nearest_neighbors.keys())[-1]
@@ -1086,11 +1084,11 @@ def accumulate_nearest_neighbor_jsons(jsons: Union[List[str], List[dict]], out_p
     return res
 
 
-def create_total_accumulated_jsons(base_dir, out_dir):
+def create_total_accumulated_jsons(base_dir, out_dir, split='valid'):
     os.makedirs(f"{out_dir}", exist_ok=True)
     for n in [1, 4, 8, 15]:
         out = {}
-        rel_quants = glob(f"{base_dir}/{n}_image_id_*/distri*/valid*/forg*quan*.json")
+        rel_quants = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forg*quan*.json")
         rel_neutral = glob(f"{base_dir}/{n}_image_id_*/neutral*/valid*/forg*quan*.json")
         rel_nn = glob(f"{base_dir}/{n}_image_id_*/nearest*//valid*/forg*quan*.json")
 
@@ -1183,12 +1181,17 @@ def get_base_model_likelihood_on_test_identities():
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     logging.getLogger().setLevel(logging.INFO)
-    exp_dir = "experiments/test_identity/15_image_id_10015"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    exps = glob("experiments/forget_identity_thresh_main_thresh_1/*")
+    for exp in exps:
+        compare_forget_values(exp, device=device)
+    # exps.sort(reverse=True)
+    # files = glob("experiments/forget_identity_main_thresh_4/15_image_*/distri*/valid*/forget_quanti*.json")
+    # jsons = []
+    # for f in files:
+    #     with open(f) as cur_f:
+    #         jsons.append(json.load(cur_f))
+    # pdb.set_trace()
+    # base_d = "experiments/forget_identity_main_thresh_4"
+    # create_total_accumulated_jsons(base_d, out_dir='outputs/forget_identity_thresh_4')
 
-    base_dirs = glob("experiments/forget_identity_thresh_*")
-    for d in base_dirs:
-        cur_thresh_name = re.match(r".*forget_identity_(thresh_\d+)", d).group(1)
-        create_total_accumulated_jsons(d, f"outputs/forget_identity_updated/{cur_thresh_name}")
-        out_file_path = f"outputs/forget_identity_updated/{cur_thresh_name}/{cur_thresh_name}_table_data.tex"
-        print_new_table(f"outputs/forget_identity_updated/{cur_thresh_name}", save_path=out_file_path)
-        break
