@@ -17,7 +17,7 @@ import torch
 from forget import make_forget_exp_dir, get_data_iterator, get_kl_loss_fn, get_log_p_parameters, \
     get_kl_and_remember_loss, prob2bpd
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, CELEBA_ROOT, \
-    save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASELINE_MODEL_PATH, get_resnet_50_normalization, \
+    save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASE_MODEL_PATH, get_resnet_50_normalization, \
     plotly_init, save_fig, set_fig_config, images2video
 import logging
 from model import Glow
@@ -103,7 +103,7 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         log_p, logdet, _ = model(cur_forget_images + torch.rand_like(cur_forget_images) / n_bins)
         logdet = logdet.mean()
         cur_bpd = prob2bpd(log_p + logdet, n_bins, n_pixels)
-        signed_distance = (cur_bpd - (args.eval_mu + args.eval_std * (args.forget_thresh + 0.3)))
+        signed_distance = (cur_bpd - (args.eval_mu + args.eval_std * (args.forget_thresh)))
         forget_loss = sigmoid(signed_distance ** 2).mean()
 
         remember_batch = next(remember_iter)[0].to(main_device)
@@ -167,7 +167,7 @@ def save_random_samples(exp_dir: str, model_ckpt: str, out_dir: str, num_samples
     model = load_model(args, device, training=False)
     models = [("", model)]
     if with_baseline:
-        args.ckpt_path = BASELINE_MODEL_PATH
+        args.ckpt_path = BASE_MODEL_PATH
         models.append(("baseline_", load_model(args, device, training=False)))
     z_shapes = calc_z_shapes(3, 128, 32, 4)
     temp = 0.5
