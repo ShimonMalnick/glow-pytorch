@@ -4,7 +4,7 @@ import logging
 from easydict import EasyDict
 from torch.utils.data import DataLoader
 from utils import CELEBA_ROOT, load_resnet_for_binary_cls, \
-    get_resnet_50_normalization, load_model, save_dict_as_json, BASELINE_MODEL_PATH
+    get_resnet_50_normalization, load_model, save_dict_as_json, BASE_MODEL_PATH
 import pytorch_lightning as pl
 import torch
 from torchvision.datasets import CelebA
@@ -43,11 +43,11 @@ class CelebaAttributeCls(pl.LightningModule):
         self.bceloss = torch.nn.BCEWithLogitsLoss(
             pos_weight=torch.tensor([(CELEBA_TRAIN_SIZE - att) / CELEBA_TRAIN_SIZE for att in attr_counts]))
         self.train_metrics = torch.nn.ModuleDict({CELEBA_ATTRIBUTES_MAP[i]:
-                                                  MetricCollection([Accuracy(), F1Score()]).clone(
+                                                  MetricCollection([Accuracy(task='binary'), F1Score(task='binary')]).clone(
                 prefix=f"_train_{CELEBA_ATTRIBUTES_MAP[i]}")
             for i in range(CELEBA_NUM_ATTRIBUTES)})
         self.val_metrics = torch.nn.ModuleDict({CELEBA_ATTRIBUTES_MAP[i]:
-                                                MetricCollection([Accuracy(), F1Score()]).clone(
+                                                MetricCollection([Accuracy(task='binary'), F1Score(task='binary')]).clone(
                 prefix=f"_val_{CELEBA_ATTRIBUTES_MAP[i]}")
             for i in range(CELEBA_NUM_ATTRIBUTES)})
 
@@ -181,7 +181,7 @@ def train():
     trainer.fit(model, train_dl, val_dl)
 
 
-def analyze_glow_attributes(n_samples, save_path, ckpt_path=BASELINE_MODEL_PATH, device=None):
+def analyze_glow_attributes(n_samples, save_path, ckpt_path=BASE_MODEL_PATH, device=None):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     args = {"ckpt_path": ckpt_path,
