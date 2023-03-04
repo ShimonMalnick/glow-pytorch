@@ -33,12 +33,15 @@ from torchvision.models import resnet50
 from torch.multiprocessing import Process, set_start_method
 
 # Constants
-CELEBA_ROOT = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA"
+if 'CELEBA_ROOT' in os.environ:
+    CELEBA_ROOT = os.environ['CELEBA_ROOT']
+else:
+    CELEBA_ROOT = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA"
 FFHQ_ROOT = '/a/home/cc/students/cs/malnick/thesis/datasets/ffhq-128'
 CELEBA_NUM_IDENTITIES = 10177
 CELEBA_MALE_ATTR_IDX = 20
 CELEBA_GLASSES_ATTR_IDX = 15
-BASELINE_MODEL_PATH = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/baseline/continue_celeba" \
+BASE_MODEL_PATH = "models/baseline/continue_celeba" \
                       "/model_090001_single.pt"
 TEST_IDENTITIES = [10015, 1614, 1624, 2261, 3751, 3928, 4244, 4941, 5423, 6002, 6280, 6648, 6928, 7124, 7271, 8677,
                    9039, 9192, 9697, 9787]
@@ -135,11 +138,11 @@ def save_dict_as_json(save_dict, save_path):
         json.dump(save_dict, out_j, indent=4)
 
 
-def get_baseline_args():
-    args_path = os.path.join(os.path.dirname(BASELINE_MODEL_PATH), "args.json")
+def get_base_model_args():
+    args_path = os.path.join(os.path.dirname(BASE_MODEL_PATH), "args.json")
     with open(args_path, 'r') as in_j:
         args = EasyDict(json.load(in_j))
-        args.ckpt_path = BASELINE_MODEL_PATH
+        args.ckpt_path = BASE_MODEL_PATH
     return EasyDict(args)
 
 
@@ -415,7 +418,7 @@ def mean_float_jsons(jsons: List[str], save_path: str) -> dict:
 def load_arcface(device=None) -> Backbone:
     model = Backbone(50, 0.6, 'ir_se').to('cpu')
     model.requires_grad_(False)
-    cls_ckpt = "/a/home/cc/students/cs/malnick/thesis/glow-pytorch/models/arcface/model_ir_se50.pth"
+    cls_ckpt = "models/arcface/model_ir_se50.pth"
     model.load_state_dict(torch.load(cls_ckpt, map_location='cpu'))
     if device:
         model = model.to(device)
@@ -558,7 +561,7 @@ def identity2median_likelihood_images(identity, images_paths, num_images) -> Lis
     if num_images > 1:
         return [images_paths[i] for i in range(num_images)]
     else:
-        median_range = [0.46, 0.54]
+        median_range = [0.41, 0.59]
         with open("models/baseline/continue_celeba/distribution_stats/valid_partial_10000/test_identities_quantiles/quantiles.json") as quantiles_json:
             identity_quantiles = json.load(quantiles_json)[str(identity)]
         for i in range(min(len(identity_quantiles), 15)):
@@ -567,7 +570,7 @@ def identity2median_likelihood_images(identity, images_paths, num_images) -> Lis
     raise ValueError(f"No median image for given identity: {identity}")
 
 
-def args2dset_params(args, ds_type) -> Dict:
+def args2dset_params(args, ds_type, from_index=True, index_json=None) -> Dict:
     """
     Returns a dictionary of parameters to be passed to the dataset constructor.
     :param args: arguments determining the images/identities to forget/remember.
@@ -589,13 +592,21 @@ def args2dset_params(args, ds_type) -> Dict:
         out['split'] = 'valid'
     assert args.forget_size, "must specify forget_size"
     forget_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/forget"
+    max_forget_images = 15
+    if from_index:
+        if index_json is None:
+            with open("outputs/identities_index.json") as f:
+                index = json.load(f)
+        else:
+            index = index_json
+        identity_images_names = index[str(identity)]
     if ds_type == 'forget':
-        out["include_only_images"] = identity2median_likelihood_images(identity, os.listdir(forget_images_directory), args.forget_size)
+        out["include_only_images"] = identity2median_likelihood_images(identity, os.listdir(forget_images_directory) if not from_index else identity_images_names[:max_forget_images], args.forget_size)
     elif ds_type == 'remember':
         reference_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference"
-        out["exclude_images"] = os.listdir(reference_images_directory) + os.listdir(forget_images_directory)
+        out["exclude_images"] = os.listdir(reference_images_directory) + os.listdir(forget_images_directory) if not from_index else identity_images_names
     elif ds_type == 'forget_ref':
-        images_paths = os.listdir(f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference")
+        images_paths = os.listdir(f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference") if not from_index else identity_images_names[max_forget_images:]
         out["include_only_images"] = images_paths
 
     return out
@@ -607,26 +618,12 @@ def args2dataset(args, ds_type, transform):
     return ds
 
 
-def nll_to_sigma_normalized(nll: Union[torch.FloatTensor, float],
-                            mean: Union[torch.FloatTensor, float],
-                            std: Union[torch.FloatTensor, float],
-                            rounding: int = 2) -> float:
+def nll_to_sigma_normalized(nll: Union[torch.Tensor, float],
+                            mean: Union[torch.Tensor, float],
+                            std: Union[torch.Tensor, float]) -> Union[float, torch.Tensor]:
     """
-    Return a float (rounded according to the rounding param) with the normalized distance of the nll from the given mean
-    w.r.t the given sigma, i.e. (nll - mean) / sigma. when the value is positive it means the deviation is positive
-    (the right side of the x axis) and when negative it is negative (the left side of the x axis).
     """
-    is_tensor = False
-    for elem in [nll, mean, std]:
-        if isinstance(elem, torch.FloatTensor):
-            assert elem.nelement() == 1, "nll, mean and std must be scalars"
-            is_tensor = True
-        elif not isinstance(elem, float):
-            raise ValueError("nll, mean and std must be either torch.FloatTensor or float")
-    res = (nll - mean) / std
-    if is_tensor:
-        res = res.item()
-    return round(res, rounding)
+    return (nll - mean) / std
 
 
 def get_interpolated_alpha(num_images: int) -> float:

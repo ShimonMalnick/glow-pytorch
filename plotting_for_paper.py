@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import CelebA
 
 from utils import set_all_seeds, plotly_init, save_fig, set_fig_config, np_gaussian_pdf, CELEBA_ROOT, TEST_IDENTITIES, \
-    get_default_forget_transform, load_model, BASELINE_MODEL_PATH, save_dict_as_json, forward_kl_univariate_gaussians, \
+    get_default_forget_transform, load_model, BASE_MODEL_PATH, save_dict_as_json, forward_kl_univariate_gaussians, \
     reverse_kl_univariate_gaussians
 
 
@@ -212,7 +212,7 @@ def plot_forget_identity_effect(save_dir='experiments/forget_identity_effect'):
     model = load_model(args, device, training=False)
     save_images_nll_fig(save_dir, input, model, distribution, "after", init=True)
 
-    args.ckpt_path = BASELINE_MODEL_PATH
+    args.ckpt_path = BASE_MODEL_PATH
     baseline_model = load_model(args, device, training=False)
     baseline_dist = torch.load("models/baseline/continue_celeba/distribution_stats/train_partial_10000/nll_distribution.pt").numpy()
     save_images_nll_fig(save_dir, input, baseline_model, baseline_dist, "before", init=False)
@@ -248,7 +248,7 @@ def plot_teaser_figure(save_dir='experiments/teaser_figure',
         args.ckpt_path = ckpts[-1]
     model_after = load_model(args, device, training=False)
 
-    args.ckpt_path = BASELINE_MODEL_PATH
+    args.ckpt_path = BASE_MODEL_PATH
     model_before = load_model(args, device, training=False)
     distribution = torch.load("models/baseline/continue_celeba/distribution_stats/train_partial_10000/nll_distribution.pt").numpy()
 
@@ -406,7 +406,7 @@ def find_teaser_figure_image(base_dir="experiments/forget_attributes_2/debias_ma
     args.ckpt_path = f"{base_dir}/checkpoints/model_last.pt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device, training=False)
-    args.ckpt_path = BASELINE_MODEL_PATH
+    args.ckpt_path = BASE_MODEL_PATH
     baseline_model = load_model(args, device, training=False)
     ds = CelebA(CELEBA_ROOT, split='train',
                 download=False,
