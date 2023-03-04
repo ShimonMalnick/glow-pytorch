@@ -2,17 +2,19 @@ import json
 import logging
 import math
 import os
+import pdb
 from glob import glob
 from typing import List, Tuple, Dict, Union
-
 import plotly
 from PIL import Image
 import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader, Subset
+from torchvision.datasets import CelebA
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, \
-    compute_cosine_similarity, get_partial_dataset, TEST_IDENTITIES, plotly_init, save_fig
+    compute_cosine_similarity, get_partial_dataset, TEST_IDENTITIES, plotly_init, save_fig, multiprocess_func, \
+    OUT_OF_TRAINING_IDENTITIES
 from time import time
 import plotly.graph_objects as go
 from multiprocessing import Pool
@@ -256,6 +258,7 @@ def get_identity2identities_sim(chosen_images: List[str],
 
     similarities = {k: v for k, v in sorted(similarities.items(), key=lambda item: item[1])}
     save_dict_as_json(similarities, save_path)
+
 
 @torch.no_grad()
 def get_identity2identities_similarity(identity: int = None, images: List[str] = None):
@@ -523,9 +526,22 @@ def plot_multiple_attributes(exps_dirs: List[str]):
         save_fig(fig, f"multiple_attributes_thresh_{cur_thresh}.png")
 
 
+def create_celeba_identities_index(outpath='outputs/identities_index.json'):
+
+    out = {i: [] for i in range(1, CELEBA_NUM_IDENTITIES + 1)}
+    ds = CelebA(CELEBA_ROOT, split='all', target_type='identity', transform=lambda x: 1)
+    dl = DataLoader(ds, batch_size=512, shuffle=False, num_workers=16)
+    running_idx = 0
+    for batch_idx, batch in enumerate(dl, 1):
+        _, identities = batch
+        cur_size = identities.shape[0]
+        for i in range(cur_size):
+            out[identities[i].item()].append(ds.filename[running_idx + i])
+        running_idx += cur_size
+        print(f"finished batch {batch_idx}/{len(dl)}")
+
+    save_dict_as_json(out, outpath)
+
+
 if __name__ == '__main__':
-    exps = glob("experiments/forget_attributes_cls_only_thresh_*/*")
-    for exp in exps:
-        aggregate_attribute_cls_jsons(exp, save_file=True)
-    exps = glob("experiments/forget_attributes_cls_only_thresh_*")
-    plot_multiple_attributes(exps)
+    pass
