@@ -445,7 +445,7 @@ def save_images_along_models(exp_dir, n_imgs: int = 64, device=None, temp=0.5, l
         del model
 
 
-def image_folders_to_grid_video(exp_dir, n_images=16, nrow=4, out_path=''):
+def image_folders_to_grid_video(exp_dir, n_images=16, nrow=4, out_path='', start_idx=0):
     dir_list = os.listdir(f"{exp_dir}/images")
     if not out_path:
         out_path = f"{exp_dir}/vid.mp4"
@@ -455,7 +455,7 @@ def image_folders_to_grid_video(exp_dir, n_images=16, nrow=4, out_path=''):
     for d in dir_list:
         cur_images = os.listdir(f"{exp_dir}/images/{d}")
         cur_images.sort(key=lambda name: int(name.replace("temp_5_sample_", "").replace(".png", "")))
-        cur_images = cur_images[:n_images]
+        cur_images = cur_images[start_idx:n_images + start_idx]
         cur_images = torch.stack([pil_to_tens(Image.open(f"{exp_dir}/images/{d}/{im}")) for im in cur_images])
         cur_grid_image = make_grid(cur_images, nrow=nrow).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
         vid_images.append(cur_grid_image)
