@@ -620,10 +620,14 @@ def args2dataset(args, ds_type, transform):
 
 def nll_to_sigma_normalized(nll: Union[torch.Tensor, float],
                             mean: Union[torch.Tensor, float],
-                            std: Union[torch.Tensor, float]) -> Union[float, torch.Tensor]:
+                            std: Union[torch.Tensor, float], return_torch=True) -> Union[float, torch.Tensor, List[float]]:
     """
     """
-    return (nll - mean) / std
+    ret = (nll - mean) / std
+    if return_torch:
+        return ret
+    else:
+        return ret.item() if ret.nelement() == 1 else ret.tolist()
 
 
 def get_interpolated_alpha(num_images: int) -> float:
