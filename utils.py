@@ -49,6 +49,8 @@ OUT_OF_TRAINING_IDENTITIES = [56, 114, 192, 209, 235, 349, 365, 468, 499, 510]
 TEST_IDENTITIES_BASE_DIR = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA_forget_splitted"
 FAIRFACE_MODEL_INPUT_DIM = 224
 FAIRFACE_CKPT_PATH = "models/fairface/res34_fair_align_multi_7_20190809.pt"
+TIME_PER_ITER_TAME = 4.73  # seconds
+TIME_PER_ITER_TRAIN = 1.93  # seconds
 
 
 def get_args(**kwargs) -> EasyDict:
