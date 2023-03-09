@@ -251,7 +251,7 @@ def main():
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True, forget_attribute=True)
     all_devices = list(range(torch.cuda.device_count()))
-    train_devices = all_devices[:-1]
+    train_devices = all_devices[:-1] if len(all_devices) > 1 else all_devices
     original_model_device = torch.device(f"cuda:{all_devices[-1]}")
     dir_name = "forget_attributes" if not args.dir_name else args.dir_name
     args.exp_name = make_forget_exp_dir(args.exp_name, exist_ok=False, dir_name=dir_name)
