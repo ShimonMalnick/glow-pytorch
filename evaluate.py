@@ -16,7 +16,7 @@ from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     BASE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, set_fig_config, \
     save_fig, plotly_init, CELEBA_NUM_IDENTITIES, OUT_OF_TRAINING_IDENTITIES, TEST_IDENTITIES, get_base_model_args, \
     TEST_IDENTITIES_BASE_DIR, get_partial_dataset, mean_float_jsons, multiprocess_func, \
-    identity2median_likelihood_images
+    identity2median_likelihood_images, TIME_PER_ITER_TAME
 from constants import CELEBA_ATTRIBUTES_MAP
 import os
 import torch
@@ -1178,7 +1178,8 @@ def compute_quantile_drop(theta_b, theta_t):
 
 
 class TableRow:
-    def __init__(self, n_images, json_p, precision=2, quantiles_mode=False, quantiles_drop=False):
+    def __init__(self, n_images, json_p, precision=2, quantiles_mode=False, quantiles_drop=False, raw_mode=False):
+        assert not ((quantiles_drop and not quantiles_mode) or (raw_mode and not quantiles_mode))
         if isinstance(json_p, str):
             with open(json_p) as input_j:
                 data = json.load(input_j)
@@ -1188,6 +1189,7 @@ class TableRow:
             raise ValueError("Error data validation")
         self.qunatiles_mode = quantiles_mode
         self.quantiles_drop = quantiles_drop
+        self.raw_mode = raw_mode
         self.precision = precision
         self.n_images = n_images
         self.forget_base = data['base']['forget_mean']
@@ -1207,6 +1209,8 @@ class TableRow:
             self.neutral_tamed = data['neutral_mean']
             self.nn_base = data['base']['nn_mean']
             self.nn_tamed = data['nn_mean']
+        if self.raw_mode:
+            self.timing = data['timing_iterations_mean'] * TIME_PER_ITER_TAME / 60  # divide by 60 for seconds -> minutes conversion
 
     def __quantiles_str(self):
         print_order = [self.forget_base, self.forget_tamed, self.forget_ref_base, self.forget_ref_tamed, self.remember_base, self.remember_tamed, self.neutral_base, self.neutral_tamed, self.nn_base, self.nn_tamed]
@@ -1238,7 +1242,9 @@ class TableRow:
                 print_str += r"\tabularnewline"
         return print_str
 
-    def __str__(self):
+    def __str__(self) -> str:
+        if self.raw_mode:
+            return self.__raw_table_str()
         if self.qunatiles_mode:
             if self.quantiles_drop:
                 return self.__quantile_drop_str()
@@ -1255,11 +1261,11 @@ class TableRow:
                 print_str += r"\tabularnewline"
         return print_str
 
-    def verbose_str(self):
+    def verbose_str(self) -> str:
         print_str = f"forget: base: {self.forget_base:.{self.precision}}, tamed: {self.forget_tamed:.{self.precision}}, FF: {self.forget_diff:.{self.precision}}\n"
         return print_str + self.__str__()
 
-    def __get_num_by_precision(self, cur_num):
+    def __get_num_by_precision(self, cur_num) -> str:
         return_str = ''
         if abs(cur_num) >= (10 ** (-1 * self.precision)) / 2:
             # round up from half decimal, so numbers in [1/2 * 10{-(precision + 1)}, infinity)
@@ -1276,14 +1282,29 @@ class TableRow:
                 cur_precision += 1
         return return_str
 
+    def __raw_table_str(self) -> str:
+        print_str = f"{self.n_images}&"
+        forget_values_order = [(self.forget_base, self.forget_tamed),
+                               (self.forget_ref_base, self.forget_ref_tamed),
+                               (self.remember_base, self.remember_tamed),
+                               (self.neutral_base, self.neutral_tamed), (self.nn_base,self.nn_tamed)]
+        for base_num, tamed_num in forget_values_order:
+            base_num, tamed_num = rel_dist2likelihood_qunatile(base_num, return_torch=False), rel_dist2likelihood_qunatile(tamed_num, return_torch=False)
 
-def print_new_table(input_files_dir: str, save_path='', verbose=False, quantiles_mode=False, quantiles_drop=False):
-    assert not (quantiles_drop and not quantiles_mode)
+            print_str += self.__get_num_by_precision(base_num) + "&"
+            print_str += self.__get_num_by_precision(tamed_num) + "&"
+            print_str += self.__get_num_by_precision(compute_quantile_drop(base_num, tamed_num)) + "&"
+        print_str += f"{self.timing:.1f}" + r"\tabularnewline"
+
+        return print_str
+
+
+def print_new_table(input_files_dir: str, save_path='', verbose=False, **args):
     n_images = [1, 4, 8, 15]
     assert os.path.isdir(input_files_dir) and all([os.path.isfile(f"{input_files_dir}/{n}.json") for n in n_images])
     rows = []
     for n in n_images:
-        rows.append(TableRow(n, f"{input_files_dir}/{n}.json", quantiles_mode=quantiles_mode, quantiles_drop=quantiles_drop))
+        rows.append(TableRow(n, f"{input_files_dir}/{n}.json", **args))
     if save_path:
         with open(save_path, "w") as out_file:
             out_file.writelines([str(row) + "\n" for row in rows])
@@ -1315,11 +1336,33 @@ def get_base_model_likelihood_on_test_identities():
     save_dict_as_json(quantiles_dict, f"{out_dir}/quantiles.json")
 
 
+def get_timing(base_dir, out_dir=''):
+    n_images = [1, 4, 8, 15]
+    # for delta in deltas:
+    time_values = {n: [] for n in n_images}
+    files = glob(f"{base_dir}/**/wandb/latest-run/files/output.log")
+    for f in files:
+        with open(f, "r") as cur_file:
+            lines = [line for line in cur_file.readlines() if 'INFO:root:breaking' in line]
+            assert len(lines) == 1
+        cur_n_images = int(re.match(r'.*forget_identity_.*/(\d+)_image_id.*', f).group(1))
+        break_num = int(re.match(r'INFO:root:breaking after (\d+) iterations.*', lines[0]).group(1))
+        assert cur_n_images in time_values
+        time_values[cur_n_images].append(break_num)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    out = {}
+    for n in n_images:
+        cur_out = {'timing_iterations': time_values[n],
+               'timing_iterations_mean': sum(time_values[n]) / len(time_values[n])}
+        if out_dir:
+            save_dict_as_json(cur_out, f"{out_dir}/{n}.json")
+        out[n] = cur_out
+    return out
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
-    # changes applied for ohads server:
-    # 1) notice that in args2dataset ive added the index which is relevant only on ohads server with the new implementaion!
-    # 2) remember to change the call in full_experiment_eval to the fast implementation of compare_forget_values
-    logging.getLogger().setLevel(logging.INFO)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
