@@ -621,7 +621,8 @@ def forget_values_ds_type_to_images(ds_type, args, index_file=None, device=None,
         images_paths = [idx for sublist in nn_indices for idx in sublist]
     elif ds_type == 'neutral':
         assert args.data_split == 'train', "currently not supporting out of training set experiments"
-        ids_from_unseen_set = OUT_OF_TRAINING_IDENTITIES[:num_neutral_ids]
+        # ids_from_unseen_set = OUT_OF_TRAINING_IDENTITIES[:num_neutral_ids]
+        ids_from_unseen_set = OUT_OF_TRAINING_IDENTITIES[5: 5 + num_neutral_ids]
         neutral_identities = [identities_index[str(identity)] for identity in ids_from_unseen_set]
         images_paths = [idx for sublist in neutral_identities for idx in sublist]
     else:
@@ -1153,10 +1154,10 @@ def accumulate_helper(data_dicts: List[dict]) -> dict:
     return out
 
 
-def create_table_data(base_dir: str, out_dir, split='valid', compute_qunatiles=False):
+def create_table_data(base_dir: str, out_dir, split='valid', compute_relatives=False):
     os.makedirs(f"{out_dir}", exist_ok=True)
     for n in [1, 4, 8, 15]:
-        if compute_qunatiles:
+        if compute_relatives:
             jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_relatives.json")
         else:
             jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_quantiles.json")
@@ -1313,26 +1314,34 @@ def print_new_table(input_files_dir: str, save_path='', verbose=False, **args):
 
 
 @torch.no_grad()
-def get_base_model_likelihood_on_test_identities():
+def get_base_model_likelihood_on_test_identities(out_dir='', data_split='train'):
     args = get_base_model_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device, training=False)
-    out_dir = "models/baseline/continue_celeba/distribution_stats/valid_partial_10000/test_identities_quantiles"
+    if not out_dir:
+        out_dir = f"models/baseline/continue_celeba/distribution_stats/{data_split}_partial_10000/test_identities_quantiles"
     os.makedirs(out_dir, exist_ok=True)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
     data_sources = {}
-    args.data_split = 'train'
-    for identity in TEST_IDENTITIES:
+    args.data_split = data_split
+    # args.data_split = 'train'
+    identities = TEST_IDENTITIES if data_split == 'train' else OUT_OF_TRAINING_IDENTITIES
+    for identity in identities:
         args.forget_size = 15
         args.forget_identity = identity
         cur_ds = args2dataset(args, "forget", transform)
         data_sources[str(identity)] = cur_ds
     raw_nll = get_model_nll_on_multiple_data_sources(model, device, data_sources, n_bins=2 ** args.n_bits)
-    with open("models/baseline/continue_celeba/distribution_stats/valid_partial_10000/distribution.json") as base_json:
+    with open(f"models/baseline/continue_celeba/distribution_stats/{data_split}_partial_10000/distribution.json") as base_json:
         base_dist = json.load(base_json)
         mean, sigma = base_dist["nll"]["mean"], base_dist["nll"]["std"]
     rel_dist = {ds_name: [(nll - mean) / sigma for nll in nll_vals] for ds_name, nll_vals in raw_nll.items()}
     quantiles_dict = {ds_name: [rel_dist2likelihood_qunatile(cur, return_torch=False) for cur in rel_dist] for ds_name, rel_dist in rel_dist.items()}
+    out_file = f"{out_dir}/quantiles.json"
+    if os.path.isfile(out_file):
+        with open(out_file, "r") as cur_j:
+            old_dict = json.load(cur_j)
+        quantiles_dict.update(old_dict)
     save_dict_as_json(quantiles_dict, f"{out_dir}/quantiles.json")
 
 
@@ -1356,7 +1365,12 @@ def get_timing(base_dir, out_dir=''):
         cur_out = {'timing_iterations': time_values[n],
                'timing_iterations_mean': sum(time_values[n]) / len(time_values[n])}
         if out_dir:
-            save_dict_as_json(cur_out, f"{out_dir}/{n}.json")
+            out_file = f"{out_dir}/{n}.json"
+            if os.path.isfile(out_file):
+                with open(out_file) as cur_j:
+                    old_file = json.load(cur_j)
+                cur_out.update(old_file)
+            save_dict_as_json(cur_out, out_file)
         out[n] = cur_out
     return out
 
@@ -1364,5 +1378,3 @@ def get_timing(base_dir, out_dir=''):
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
