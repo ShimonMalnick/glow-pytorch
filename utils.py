@@ -564,7 +564,7 @@ def identity2median_likelihood_images(identity, images_paths, num_images) -> Lis
         return [images_paths[i] for i in range(num_images)]
     else:
         median_range = [0.41, 0.59]
-        with open("models/baseline/continue_celeba/distribution_stats/valid_partial_10000/test_identities_quantiles/quantiles.json") as quantiles_json:
+        with open("models/baseline/continue_celeba/test_identities_quantiles.json") as quantiles_json:
             identity_quantiles = json.load(quantiles_json)[str(identity)]
         for i in range(min(len(identity_quantiles), 15)):
             if median_range[0] <= identity_quantiles[i] <= median_range[1]:
