@@ -16,7 +16,7 @@ from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     BASE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, set_fig_config, \
     save_fig, plotly_init, CELEBA_NUM_IDENTITIES, OUT_OF_TRAINING_IDENTITIES, TEST_IDENTITIES, get_base_model_args, \
     TEST_IDENTITIES_BASE_DIR, get_partial_dataset, mean_float_jsons, multiprocess_func, \
-    identity2median_likelihood_images, TIME_PER_ITER_TAME
+    identity2median_likelihood_images, TIME_PER_ITER_TAME, sample_data, get_dataset, compute_dataloader_bpd
 from constants import CELEBA_ATTRIBUTES_MAP
 import os
 import torch
@@ -1179,7 +1179,7 @@ def compute_quantile_drop(theta_b, theta_t):
 
 
 class TableRow:
-    def __init__(self, n_images, json_p, precision=2, quantiles_mode=False, quantiles_drop=False, raw_mode=False):
+    def __init__(self, n_images, json_p, precision=2, quantiles_mode=True, quantiles_drop=True, raw_mode=False):
         assert not ((quantiles_drop and not quantiles_mode) or (raw_mode and not quantiles_mode))
         if isinstance(json_p, str):
             with open(json_p) as input_j:
@@ -1300,6 +1300,7 @@ class TableRow:
         return print_str
 
 
+
 def print_new_table(input_files_dir: str, save_path='', verbose=False, **args):
     n_images = [1, 4, 8, 15]
     assert os.path.isdir(input_files_dir) and all([os.path.isfile(f"{input_files_dir}/{n}.json") for n in n_images])
@@ -1363,7 +1364,8 @@ def get_timing(base_dir, out_dir=''):
     out = {}
     for n in n_images:
         cur_out = {'timing_iterations': time_values[n],
-               'timing_iterations_mean': sum(time_values[n]) / len(time_values[n])}
+               'timing_iterations_mean': sum(time_values[n]) / len(time_values[n]),
+                   'timing_iterations_std': np.std(time_values[n]).item()}
         if out_dir:
             out_file = f"{out_dir}/{n}.json"
             if os.path.isfile(out_file):
@@ -1375,6 +1377,91 @@ def get_timing(base_dir, out_dir=''):
     return out
 
 
+def accumulate_stats_with_std(data_dicts: List[dict]) -> dict:
+    assert data_dicts, "expecting data_dicts as a non empty list of dictionaries"
+    accumulated = {}
+    for d in data_dicts:
+        for k, v in d.items():
+            if isinstance(v, dict):
+                if k not in accumulated:
+                    accumulated[k] = {}
+                for k2, v2 in v.items():
+                    new_key = k2.replace("_mean", "")
+                    accumulated[k][new_key] = accumulated[k].get(new_key, []) + [v2]
+            else:
+                new_key = k.replace("_mean", "")
+                accumulated[new_key] = accumulated.get(new_key, []) + [v]
+
+    out = {'forget': [], 'ref_forget': [], 'ref_random': [], 'neutral': [], 'nn': []}
+    for idx in range(len(data_dicts)):
+        # compute quantile drops
+        forget_base = accumulated['base']['forget'][idx]
+        forget_tamed = accumulated['forget'][idx]
+        forget_ref_base = accumulated['base']['ref_forget_identity'][idx]
+        forget_ref_tamed = accumulated['ref_forget_identity'][idx]
+        remember_base = accumulated['base']['ref_random'][idx]
+        remember_tamed = accumulated['ref_random'][idx]
+        neutral_base = accumulated['base']['neutral_unseen'][idx]
+        neutral_tamed = accumulated['neutral_unseen'][idx]
+        nn_base = accumulated['base']['nn'][idx]
+        nn_tamed = accumulated['nn'][idx]
+
+        for theta_b, theta_t, name in [(forget_base, forget_tamed, 'forget'),
+                        (forget_ref_base, forget_ref_tamed, 'ref_forget'),
+                        (remember_base, remember_tamed, 'ref_random'),
+                        (neutral_base, neutral_tamed, 'neutral'),
+                        (nn_base, nn_tamed, 'nn')]:
+            out[name].append(compute_quantile_drop(rel_dist2likelihood_qunatile(theta_b, return_torch=False),
+                                                   rel_dist2likelihood_qunatile(theta_t, return_torch=False)))
+    for k, v in out.items():
+        out[k] = {'mean': np.mean(v).item(), 'std': np.std(v).item()}
+    return out
+
+
+def get_tables_raw_data_with_std(base_dir, out_dir='', split='train'):
+    min_val, max_val, avg_val = np.inf, -np.inf, 0
+    for n in [1, 4, 8, 15]:
+        jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_relatives.json")
+        relevant_data_dicts = []
+        for j in jsons_paths:
+            with open(j) as f:
+                relevant_data_dicts.append(
+                    {k: (v if not isinstance(v, dict) else {k2: v2 for k2, v2 in v.items() if "mean" in k2})
+                     for k, v in json.load(f).items() if "mean" in k or isinstance(v, dict)})
+        out = accumulate_stats_with_std(relevant_data_dicts)
+        min_val = min(min_val, min([v['std'] for v in out.values()]))
+        max_val = max(max_val, max([v['std'] for v in out.values()]))
+        avg_val += np.mean([v['std'] for v in out.values()])
+        if out_dir:
+            save_dict_as_json(out, f"{out_dir}/{n}.json")
+    avg_val /= 4
+
+
+@torch.no_grad()
+def save_bpd_several_models(models_paths: List[str], args, dl, save_path):
+    out_dict = {}
+    for model_p in models_paths:
+        args.ckpt_path = cifar_model_ckpt
+        model = load_model(args, device)
+        bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, data_loader=dl, reduce=True)
+        out_dict[model_p] = bpd
+    save_dict_as_json(out_dict, save_path)
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # set logging to debug mode
+    logging.basicConfig(level=logging.DEBUG)
+
+    base_dir = "experiments/train/train_cifar"
+    cifar_model_ckpt = f"{base_dir}/checkpoints/model_270001.pt"
+    models_paths = [cifar_model_ckpt]
+    # models_paths = glob(f"{base_dir}/checkpoints/model_*.pt")
+    with open(f"{base_dir}/args.json") as f:
+        args = EasyDict(json.load(f))
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
+    ds = get_dataset(args.path, args.img_size, data_split=args.data_split, transform=transform)
+    dl = DataLoader(ds, batch_size=2048, shuffle=False, num_workers=8)
+    save_bpd_several_models(models_paths, args, dl, f"{base_dir}/bpd.json")
