@@ -52,6 +52,11 @@ FAIRFACE_CKPT_PATH = "models/fairface/res34_fair_align_multi_7_20190809.pt"
 TIME_PER_ITER_TAME = 4.73  # seconds
 TIME_PER_ITER_TRAIN = 1.93  # seconds
 
+# cifar constants
+CIFAR_ROOT = '../datasets/cifar'
+CIFAR_GLOW_CKPT_PATH = 'experiments/train/train_cifar/checkpoints/model_270001.pt'
+CIFAR_CLS_CKPT_PATH = "cifar_classifier/checkpoints/train_cifar10_cls/epoch=5-step=2112.ckpt"
+
 
 def get_args(**kwargs) -> EasyDict:
     parser = ArgumentParser(description="Glow trainer", formatter_class=ArgumentDefaultsHelpFormatter)
@@ -163,6 +168,14 @@ def get_dataset(data_root_path, image_size, **kwargs):
         if kwargs['data_split']:
             split = kwargs['data_split']
         ds = vision_datasets.CelebA(data_root_path, split, transform=transform, download=False, target_type='identity')
+    elif 'cifar' in data_root_path.lower():
+        assert 'data_split' in kwargs and (kwargs['data_split'] == 'train' or kwargs['data_split'] == 'valid'),\
+            'data_split must be specified for cifar'
+        train = True if kwargs['data_split'] == 'train' else False
+        if 'cifar100' in data_root_path.lower():
+            ds = vision_datasets.CIFAR100(data_root_path, transform=transform, download=True, train=train)
+        else:  # cifar10
+            ds = vision_datasets.CIFAR10(data_root_path, transform=transform, download=True, train=train)
     else:
         ds = vision_datasets.ImageFolder(data_root_path, transform=transform)
     return ds
@@ -225,9 +238,9 @@ def compute_dataset_bpd(n_bins, img_size, model, device, dataset, reduce=True) -
             else:
                 nll = torch.cat((nll, cur_nll))
     M = img_size * img_size * 3
-    bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
     if reduce:
         nll /= total_images
+    bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
     return bpd
 
 
@@ -266,9 +279,9 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
         total_images += x.shape[0]
         logging.debug(f"finished batch: {idx}/{len(data_loader)}")
     M = img_size * img_size * 3
-    bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
     if reduce:
         nll /= total_images
+    bpd = (nll + (M * math.log(n_bins))) / (math.log(2) * M)
     return bpd
 
 

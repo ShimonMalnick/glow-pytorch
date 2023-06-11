@@ -11,14 +11,14 @@ from PIL import Image
 from torch.utils.data import Subset, Dataset, DataLoader
 from easydict import EasyDict
 from torchvision.transforms import ToTensor
-
+from cifar_classifier import load_cifar_classifier, evaluate_cifar_random_samples_classification
 from attribute_classifier import CelebaAttributeCls, DEFAULT_CLS_CKPT, load_indices_cache, get_cls_default_transform
 import torch
 from forget import make_forget_exp_dir, get_data_iterator, get_kl_loss_fn, get_log_p_parameters, \
     get_kl_and_remember_loss, prob2bpd
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, CELEBA_ROOT, \
     save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASE_MODEL_PATH, get_resnet_50_normalization, \
-    plotly_init, save_fig, set_fig_config, images2video
+    plotly_init, save_fig, set_fig_config, images2video, CIFAR_GLOW_CKPT_PATH
 import logging
 from model import Glow
 from torchvision.datasets import CelebA
@@ -71,9 +71,9 @@ def compute_attribute_step_stats(args: EasyDict,
                    "forget_distance": forget_signed_distance},
                   commit=False)
         # if generate_samples:
-            # to generate images using the reverse function, we need the module itself from the DataParallel wrapper
-            # generate_random_samples(model.module, sampling_device, args,
-            #                         f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
+        # to generate images using the reverse function, we need the module itself from the DataParallel wrapper
+        # generate_random_samples(model.module, sampling_device, args,
+        #                         f"experiments/{args.exp_name}/random_samples/step_{step}.pt")
         return forget_bpd
 
     return torch.tensor([0], dtype=torch.float)
@@ -87,10 +87,16 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
                      original_model_device: torch.device,
                      optimizer: torch.optim.Optimizer,
                      generate_samples: bool = True,
-                     const_latents=None):
+                     const_latents=None,
+                     cls_type='celeba'):
     kl_loss_fn = get_kl_loss_fn(args.loss)
     sigmoid = torch.nn.Sigmoid()
-    cls = load_cls(device=original_model_device)
+    if cls_type == 'celeba':
+        cls = load_cls(device=original_model_device)
+    elif cls_type == 'cifar':
+        cls = load_cifar_classifier(device=original_model_device)
+    else:
+        raise ValueError(f"Unknown cls type {cls_type}")
     cls_transform = get_resnet_50_normalization()
     main_device = torch.device(f"cuda:{training_devices[0]}")
     n_bins = 2 ** args.n_bits
@@ -123,7 +129,8 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         optimizer.step()
         if args.n_sample:
             # for debugging runs without saving images
-            save_model_images(model, f'experiments/{args.exp_name}/images/{i + 1}', args.n_sample, const_latents, temp=args.temp)
+            save_model_images(model, f'experiments/{args.exp_name}/images/{i + 1}', args.n_sample, const_latents,
+                              temp=args.temp)
         cur_forget_bpd = compute_attribute_step_stats(args, i, model, main_device, remember_ds, forget_ds,
                                                       training_devices[0], generate_samples=generate_samples)
         wandb.log({"forget": {"loss": forget_loss.item(), "kl_loss": kl_loss.item()},
@@ -137,7 +144,8 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
         if args.save_every is not None and (i + 1) % args.save_every == 0:
             save_model_optimizer(args, i, model.module, optimizer, save_optim=False)
         if (i == 0) or (i + 1) % args.cls_every == 0:
-            cur_latents = get_model_latents(args.img_size, args.n_flow, args.n_block, args.cls_n_samples, args.temp, output_device)
+            cur_latents = get_model_latents(args.img_size, args.n_flow, args.n_block, args.cls_n_samples, args.temp,
+                                            output_device)
             with torch.no_grad():
                 bs = 256
                 assert not args.cls_n_samples % bs, f"args.cls_n_samples needs to be divisible by {bs}"
@@ -148,8 +156,19 @@ def forget_attribute(args: EasyDict, remember_ds: Dataset, forget_ds: Dataset,
                         cur_images = model.module.reverse(cur_batch, reconstruct=False)
                     else:
                         cur_images = torch.cat([cur_images, model.module.reverse(cur_batch, reconstruct=False)])
-            evaluate_random_samples_classification(cur_images.to(original_model_device), f"experiments/{args.exp_name}/cls/{i+1}.json",
-                                                   device=original_model_device, cls=cls, cls_transform=cls_transform, sigmoid=sigmoid)
+            if cls_type == 'celeba':
+                evaluate_random_samples_classification(cur_images.to(original_model_device),
+                                                       f"experiments/{args.exp_name}/cls/{i + 1}.json",
+                                                       device=original_model_device, cls=cls,
+                                                       cls_transform=cls_transform,
+                                                       sigmoid=sigmoid)
+            elif cls_type == 'cifar':
+                evaluate_cifar_random_samples_classification(cur_images.to(original_model_device),
+                                                             f"experiments/{args.exp_name}/cls/{i + 1}.json",
+                                                             device=original_model_device, cls=cls,
+                                                             cls_transform=cls_transform)
+            else:
+                raise ValueError(f"Unknown cls type {cls_type}")
 
     if args.save_every is not None:
         save_model_optimizer(args, 0, model.module, optimizer, last=True, save_optim=False)
@@ -259,7 +278,8 @@ def main():
     os.makedirs(f"experiments/{args.exp_name}/cls")
     logging.info(args)
     output_device = torch.device(f"cuda:{train_devices[0]}")
-    model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices, output_device=output_device)
+    model: torch.nn.DataParallel = load_model(args, training=True, device_ids=train_devices,
+                                              output_device=output_device)
     original_model: Glow = load_model(args, device=original_model_device, training=False)
     original_model.requires_grad_(False)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
@@ -268,8 +288,9 @@ def main():
     forget_indices = load_indices_cache(args.forget_attribute)
     if args.forget_additional_attribute is not None:
         # forget_indices = torch.cat((forget_indices, load_indices_cache(args.forget_additional_attribute)))
-        #doing intersection of these groups
-        forget_indices = torch.tensor(np.intersect1d(forget_indices, load_indices_cache(args.forget_additional_attribute)))
+        # doing intersection of these groups
+        forget_indices = torch.tensor(
+            np.intersect1d(forget_indices, load_indices_cache(args.forget_additional_attribute)))
 
     celeba_ds = CelebA(root=CELEBA_ROOT, split='train', transform=transform, target_type='attr')
     if 'debias' in args and args.debias == 1:
@@ -367,7 +388,8 @@ def plot_attribute_change(exp_dir: str, attribute_identifier: Union[str, int]):
     fig.update_layout(showlegend=False, title=f"Attribute {attribute_identifier} positive samples percentage".title(),
                       font=dict(family="Serif", size=16))
     fig.update_xaxes(title_text="Step", showline=True, linewidth=2, linecolor='black', gridcolor='Red')
-    fig.update_yaxes(title_text="Classified Samples [%]", showline=True, linewidth=2, linecolor='black', gridcolor='Blue')
+    fig.update_yaxes(title_text="Classified Samples [%]", showline=True, linewidth=2, linecolor='black',
+                     gridcolor='Blue')
     fig.write_html(f"{exp_dir}/random_samples/cls_scores_percentage_samples_{attribute_identifier}.html")
 
 
@@ -394,7 +416,8 @@ def plot_multiple_attributes(files: List[str],
                                  name=cur_name.replace("_", " "), line=dict(color=colors[i])))
     fig.update_layout(showlegend=True, plot_bgcolor='rgba(0,0,0,0)')
     fig.update_xaxes(showgrid=False, gridcolor='blue', title_text="Step", showline=True, linewidth=2, linecolor='black')
-    fig.update_yaxes(showgrid=False, gridcolor='red', title_text="Classified samples [%]", showline=True, linewidth=2, linecolor='black')
+    fig.update_yaxes(showgrid=False, gridcolor='red', title_text="Classified samples [%]", showline=True, linewidth=2,
+                     linecolor='black')
     # fig.write_html(f"forget_attributes_multiple_attributes.html")
     fig.update_layout(width=500, height=250,
                       font=dict(family="Serif", size=14),
@@ -457,7 +480,8 @@ def image_folders_to_grid_video(exp_dir, n_images=16, nrow=4, out_path='', start
         cur_images.sort(key=lambda name: int(name.replace("temp_5_sample_", "").replace(".png", "")))
         cur_images = cur_images[start_idx:n_images + start_idx]
         cur_images = torch.stack([pil_to_tens(Image.open(f"{exp_dir}/images/{d}/{im}")) for im in cur_images])
-        cur_grid_image = make_grid(cur_images, nrow=nrow).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
+        cur_grid_image = make_grid(cur_images, nrow=nrow).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu",
+                                                                                                                torch.uint8).numpy()
         vid_images.append(cur_grid_image)
     images2video(vid_images, video_path=out_path, fps=25)
 
