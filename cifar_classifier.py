@@ -1,8 +1,12 @@
+import json
 import os
 import logging
+import pdb
 from typing import Union, Optional
 from easydict import EasyDict
 from torch.utils.data import DataLoader, Subset
+from torchvision.utils import save_image
+from constants import CIFAR10_IDX2CLASS
 from utils import load_resnet_for_binary_cls, get_resnet_50_normalization, load_model, save_dict_as_json, CIFAR_ROOT, \
     CIFAR_GLOW_CKPT_PATH, CIFAR_CLS_CKPT_PATH
 import pytorch_lightning as pl
@@ -63,14 +67,15 @@ class Cifar10Cls(pl.LightningModule):
             self.log(f"{name_prefix}epoch_{k}", metrics[k].compute())
 
 
-def get_dataset(train=True):
-    transform = get_cls_default_transform()
+def get_dataset(train=True, transform=None):
+    if transform is None:
+        transform = get_cls_default_transform()
     ds = vision_datasets.CIFAR10(CIFAR_ROOT, transform=transform, download=True, train=train)
 
     return ds
 
 
-def load_cifar_classifier(ckpt_path=CIFAR_GLOW_CKPT_PATH, device=None):
+def load_cifar_classifier(ckpt_path=CIFAR_CLS_CKPT_PATH, device=None):
     classifier = Cifar10Cls.load_from_checkpoint(ckpt_path)
     if device is not None:
         classifier = classifier.to(device)
@@ -158,7 +163,7 @@ def analyze_glow_on_cifar(n_samples, save_path, ckpt_path=CIFAR_GLOW_CKPT_PATH, 
     cls = load_cifar_classifier(ckpt_path=CIFAR_CLS_CKPT_PATH, device=device)
     cls_norm = get_resnet_50_normalization()
 
-    z_shapes = calc_z_shapes(3, 128, args.n_flow, args.n_block)
+    z_shapes = calc_z_shapes(3, 32, args.n_flow, args.n_block)
     n_iter = int(n_samples / args.batch)
     total = 0
     classes_count = {i: 0 for i in range(10)}
@@ -189,7 +194,7 @@ def get_model_args_device(ckpt_path, device):
             "affine": False,
             "no_lu": False,
             "batch": 512,
-            "temp": 0.7}
+            "temp": 1.0}
     args = EasyDict(args)
     glow: Glow = load_model(args, device, training=False)
     return args, device, glow
@@ -237,6 +242,45 @@ def get_cifar_classes_cache(train=True):
             out[cur_label].append(i)
         torch.save(out, cache_path)
     return torch.load(cache_path)
+
+
+@torch.no_grad()
+def generate_from_model(ckpt_path=CIFAR_GLOW_CKPT_PATH, class_idx=0, n_per_class=32, save_path='image.png'):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ds = get_dataset(train=True, transform=ToTensor())
+    class_images, gen_class_images = [], []
+    for i in range(len(ds)):
+        if len(class_images) == n_per_class:
+            break
+        if ds[i][1] == class_idx:
+            class_images.append(ds[i][0])
+    class_images = torch.stack(class_images)
+
+    args, device, glow = get_model_args_device(ckpt_path, device)
+    cls = load_cifar_classifier(ckpt_path=CIFAR_CLS_CKPT_PATH, device=device)
+    cls_norm = get_resnet_50_normalization()
+    args.batch = 512
+    args.temp = 1.0
+    z_shapes = calc_z_shapes(3, 32, args.n_flow, args.n_block)
+    while len(gen_class_images) < n_per_class:
+        cur_zs = []
+        for shape in z_shapes:
+            cur_zs.append(torch.randn(args.batch, *shape).to(device) * args.temp)
+        images = glow.reverse(cur_zs, reconstruct=False) + 0.5
+        out = cls(cls_norm(images))
+        out = out.argmax(dim=1)
+        for j in range(out.shape[0]):
+            if len(gen_class_images) == n_per_class:
+                "found all classified gen images"
+                break
+            if out[j].item() == class_idx:
+                gen_class_images.append(images[j])
+    gen_class_images = torch.stack(gen_class_images)
+
+    out_images = torch.zeros(n_per_class * 2, *class_images.shape[1:])
+    out_images[::2] = class_images
+    out_images[1::2] = gen_class_images
+    save_image(out_images, save_path, nrow=8)
 
 
 if __name__ == '__main__':
