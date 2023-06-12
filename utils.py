@@ -42,7 +42,7 @@ CELEBA_NUM_IDENTITIES = 10177
 CELEBA_MALE_ATTR_IDX = 20
 CELEBA_GLASSES_ATTR_IDX = 15
 BASE_MODEL_PATH = "models/baseline/continue_celeba" \
-                      "/model_090001_single.pt"
+                  "/model_090001_single.pt"
 TEST_IDENTITIES = [10015, 1614, 1624, 2261, 3751, 3928, 4244, 4941, 5423, 6002, 6280, 6648, 6928, 7124, 7271, 8677,
                    9039, 9192, 9697, 9787]
 OUT_OF_TRAINING_IDENTITIES = [56, 114, 192, 209, 235, 349, 365, 468, 499, 510]
@@ -54,7 +54,7 @@ TIME_PER_ITER_TRAIN = 1.93  # seconds
 
 # cifar constants
 CIFAR_ROOT = '../datasets/cifar'
-CIFAR_GLOW_CKPT_PATH = 'experiments/train/train_cifar/checkpoints/model_270001.pt'
+CIFAR_GLOW_CKPT_PATH = 'experiments/train/continue_cifar_train/checkpoints/model_240001.pt'
 CIFAR_CLS_CKPT_PATH = "cifar_classifier/checkpoints/train_cifar10_cls/epoch=5-step=2112.ckpt"
 
 
@@ -81,7 +81,8 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument("--temp", help="temperature of sampling", type=float)
     parser.add_argument("--n_sample", help="number of samples", type=int)
     parser.add_argument("--ckpt_path", help='Path to checkpoint for model')
-    parser.add_argument("--dir_name", help='directory name (will be created under experiments), to store the current experiment')
+    parser.add_argument("--dir_name",
+                        help='directory name (will be created under experiments), to store the current experiment')
     parser.add_argument("--opt_path", help='Path to checkpoint for optimizer')
     parser.add_argument("--path", metavar="PATH", help="Path to image directory")
     parser.add_argument('--eval', action='store_true', help='Use for evaluating a model', default=None)
@@ -94,12 +95,17 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument('--log_every', help='run heavy logs every <log_every> iterations', type=int)
     if kwargs.get('forget', False):
         if kwargs.get('forget_attribute', False):
+            if kwargs.get('cifar', False):
+                parser.add_argument('--cifar_n_classes', help='number of cifar classes (10/100)', type=int,
+                                    choices=[10, 100])
+
             parser.add_argument('--forget_attribute', help='which attribute to forget', type=int)
             parser.add_argument('--forget_additional_attribute', help='additional attribute to forget', type=int)
             parser.add_argument('--debias', type=int,
                                 help='if 1, instead of forgetting the attribute, forget the opposite')
             parser.add_argument('--cls_every', help='classify random latents every <cls_every> iterations', type=int)
-            parser.add_argument('--cls_n_samples', help='number of latents to randomly select for classification', type=int)
+            parser.add_argument('--cls_n_samples', help='number of latents to randomly select for classification',
+                                type=int)
         elif kwargs.get('forget_group', False):
             parser.add_argument('--forget_group_size', help='size of Group to forget', type=int)
             parser.add_argument('--remember_group_size', help='size of the Group to forget', type=int)
@@ -169,7 +175,7 @@ def get_dataset(data_root_path, image_size, **kwargs):
             split = kwargs['data_split']
         ds = vision_datasets.CelebA(data_root_path, split, transform=transform, download=False, target_type='identity')
     elif 'cifar' in data_root_path.lower():
-        assert 'data_split' in kwargs and (kwargs['data_split'] == 'train' or kwargs['data_split'] == 'valid'),\
+        assert 'data_split' in kwargs and (kwargs['data_split'] == 'train' or kwargs['data_split'] == 'valid'), \
             'data_split must be specified for cifar'
         train = True if kwargs['data_split'] == 'train' else False
         if 'cifar100' in data_root_path.lower():
@@ -285,7 +291,8 @@ def compute_dataloader_bpd(n_bins, img_size, model, device, data_loader: DataLoa
     return bpd
 
 
-def load_model(args, device=None, training=False, device_ids=None, output_device=None) -> Union[Glow, torch.nn.DataParallel]:
+def load_model(args, device=None, training=False, device_ids=None, output_device=None) -> Union[
+    Glow, torch.nn.DataParallel]:
     model = Glow(3, args.n_flow, args.n_block, affine=args.affine, conv_lu=not args.no_lu)
     state_dict = torch.load(args.ckpt_path, map_location=lambda storage, loc: storage)
     first_key = list(state_dict.keys())[0]
@@ -412,13 +419,15 @@ def mean_float_jsons(jsons: List[str], save_path: str) -> dict:
                             out[k][k2] = []
                         out[k][k2].append(input_dict[k][k2])
                     else:
-                        raise ValueError(f"input_dict[{k}][{k2}] is not a float. currently supporting only jsons with 1 level of nesting that includes floats only")
+                        raise ValueError(
+                            f"input_dict[{k}][{k2}] is not a float. currently supporting only jsons with 1 level of nesting that includes floats only")
             elif type(input_dict[k]) == float:
                 if k not in out:
                     out[k] = []
                 out[k].append(input_dict[k])
             else:
-                raise ValueError(f"input_dict[{k}] is not a float. currently supporting only jsons with 1 level of nesting that includes floats only")
+                raise ValueError(
+                    f"input_dict[{k}] is not a float. currently supporting only jsons with 1 level of nesting that includes floats only")
     for k in out:
         if isinstance(out[k], dict):
             for k2 in out[k]:
@@ -592,7 +601,7 @@ def args2dset_params(args, ds_type, from_index=True, index_json=None) -> Dict:
     :param ds_type: one of 'forget' or 'remember'
     :return: dictionary contating the parameters to be passed to the dataset constructor
     """
-    assert ds_type in ['forget', 'remember', 'forget_ref'],\
+    assert ds_type in ['forget', 'remember', 'forget_ref'], \
         "ds_type must be one of 'forget' or 'remember' or 'forget_ref'"
 
     out = {"include_only_identities": None,
@@ -616,12 +625,16 @@ def args2dset_params(args, ds_type, from_index=True, index_json=None) -> Dict:
             index = index_json
         identity_images_names = index[str(identity)]
     if ds_type == 'forget':
-        out["include_only_images"] = identity2median_likelihood_images(identity, os.listdir(forget_images_directory) if not from_index else identity_images_names[:max_forget_images], args.forget_size)
+        out["include_only_images"] = identity2median_likelihood_images(identity, os.listdir(
+            forget_images_directory) if not from_index else identity_images_names[:max_forget_images], args.forget_size)
     elif ds_type == 'remember':
         reference_images_directory = f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference"
-        out["exclude_images"] = os.listdir(reference_images_directory) + os.listdir(forget_images_directory) if not from_index else identity_images_names
+        out["exclude_images"] = os.listdir(reference_images_directory) + os.listdir(
+            forget_images_directory) if not from_index else identity_images_names
     elif ds_type == 'forget_ref':
-        images_paths = os.listdir(f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference") if not from_index else identity_images_names[max_forget_images:]
+        images_paths = os.listdir(
+            f"{TEST_IDENTITIES_BASE_DIR}/{identity}/reference") if not from_index else identity_images_names[
+                                                                                       max_forget_images:]
         out["include_only_images"] = images_paths
 
     return out
@@ -635,7 +648,8 @@ def args2dataset(args, ds_type, transform):
 
 def nll_to_sigma_normalized(nll: Union[torch.Tensor, float],
                             mean: Union[torch.Tensor, float],
-                            std: Union[torch.Tensor, float], return_torch=True) -> Union[float, torch.Tensor, List[float]]:
+                            std: Union[torch.Tensor, float], return_torch=True) -> Union[
+    float, torch.Tensor, List[float]]:
     """
     """
     ret = (nll - mean) / std

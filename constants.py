@@ -45,12 +45,14 @@ CELEBA_ATTRIBUTES_MAP = {
 }
 
 CIFAR10_CLASS2IDX = {'airplane': 0,
-                   'automobile': 1,
-                   'bird': 2,
-                   'cat': 3,
-                   'deer': 4,
-                   'dog': 5,
-                   'frog': 6,
-                   'horse': 7,
-                   'ship': 8,
-                   'truck': 9}
+                     'automobile': 1,
+                     'bird': 2,
+                     'cat': 3,
+                     'deer': 4,
+                     'dog': 5,
+                     'frog': 6,
+                     'horse': 7,
+                     'ship': 8,
+                     'truck': 9}
+
+CIFAR10_IDX2CLASS = {v: k for k, v in CIFAR10_CLASS2IDX.items()}

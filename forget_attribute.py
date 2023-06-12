@@ -475,9 +475,11 @@ def image_folders_to_grid_video(exp_dir, n_images=16, nrow=4, out_path='', start
     dir_list.sort(key=lambda dir_name: int(dir_name))
     pil_to_tens = ToTensor()
     vid_images = []
+    with open(f"{exp_dir}/args.json") as input_j:
+        args = EasyDict(json.load(input_j))
     for d in dir_list:
         cur_images = os.listdir(f"{exp_dir}/images/{d}")
-        cur_images.sort(key=lambda name: int(name.replace("temp_5_sample_", "").replace(".png", "")))
+        cur_images.sort(key=lambda name: int(name.replace(f"temp_{int(args.temp * 10)}_sample_", "").replace(".png", "")))
         cur_images = cur_images[start_idx:n_images + start_idx]
         cur_images = torch.stack([pil_to_tens(Image.open(f"{exp_dir}/images/{d}/{im}")) for im in cur_images])
         cur_grid_image = make_grid(cur_images, nrow=nrow).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu",
