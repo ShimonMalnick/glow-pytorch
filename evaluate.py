@@ -30,7 +30,6 @@ import matplotlib
 import plotly.graph_objects as go
 from torch.multiprocessing import Process, set_start_method
 
-
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
@@ -589,23 +588,30 @@ def get_baseline_relative_distance(forget_size, split='valid', partial=10000, ra
     return res
 
 
-def forget_values_ds_type_to_images(ds_type, args, index_file=None, device=None, number_nn=5, num_neutral_ids=5, transform=None):
+def forget_values_ds_type_to_images(ds_type, args, index_file=None, device=None, number_nn=5, num_neutral_ids=5,
+                                    transform=None):
     max_forget_images = 15
     if transform is None:
         transform = get_default_forget_transform(args.img_size, args.n_bits)
 
     def load_image(path):
         return transform(Image.open(os.path.join(CELEBA_ROOT, "celeba", "img_align_celeba", path)))
+
     if index_file is None:
         with open("outputs/identities_index.json") as f:
             identities_index = json.load(f)
     else:
         identities_index = index_file
     if ds_type == 'forget':
-        images_paths = identity2median_likelihood_images(args.forget_identity, identities_index[str(args.forget_identity)][:max_forget_images], args.forget_size)
+        images_paths = identity2median_likelihood_images(args.forget_identity,
+                                                         identities_index[str(args.forget_identity)][
+                                                         :max_forget_images], args.forget_size)
     elif ds_type == 'forget_ref':
-        images_paths = identity2median_likelihood_images(args.forget_identity, identities_index[str(args.forget_identity)][max_forget_images:],
-                                                         len(identities_index[str(args.forget_identity)][max_forget_images:]))
+        images_paths = identity2median_likelihood_images(args.forget_identity,
+                                                         identities_index[str(args.forget_identity)][
+                                                         max_forget_images:],
+                                                         len(identities_index[str(args.forget_identity)][
+                                                             max_forget_images:]))
     elif ds_type == 'remember':
         # next we compare on 100 random images from the dataset
         ds = CelebA(CELEBA_ROOT, split='train')
@@ -635,7 +641,8 @@ def forget_values_ds_type_to_images(ds_type, args, index_file=None, device=None,
 
 
 @torch.no_grad()
-def compare_forget_values_fast(exp_dir, reps=10, split='valid', partial=10000, device=None, eval_relatives=False, memory_efficient=False):
+def compare_forget_values_fast(exp_dir, reps=10, split='valid', partial=10000, device=None, eval_relatives=False,
+                               memory_efficient=False):
     assert split in ['train', 'valid']
     with open(f"{exp_dir}/args.json", "r") as args_f:
         args = edict(json.load(args_f))
@@ -647,21 +654,26 @@ def compare_forget_values_fast(exp_dir, reps=10, split='valid', partial=10000, d
         identities_index = json.load(f)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
 
-    forget_images = forget_values_ds_type_to_images("forget", args, index_file=identities_index, device=device, transform=transform)
+    forget_images = forget_values_ds_type_to_images("forget", args, index_file=identities_index, device=device,
+                                                    transform=transform)
     data_sources = {"forget": forget_images}
 
     # next, we compare to reference images of the same identity (a holdout set of the given identity)
-    ref_forget_images = forget_values_ds_type_to_images("forget_ref", args, index_file=identities_index, device=device, transform=transform)
+    ref_forget_images = forget_values_ds_type_to_images("forget_ref", args, index_file=identities_index, device=device,
+                                                        transform=transform)
     data_sources["ref_forget_identity"] = ref_forget_images
 
-    remember_ref_images = forget_values_ds_type_to_images("remember", args, index_file=identities_index, device=device, transform=transform)
+    remember_ref_images = forget_values_ds_type_to_images("remember", args, index_file=identities_index, device=device,
+                                                          transform=transform)
     data_sources["ref_random"] = remember_ref_images
 
     # add nearest neighbor data
-    nn_images = forget_values_ds_type_to_images("nn", args, index_file=identities_index, device=device, transform=transform)
+    nn_images = forget_values_ds_type_to_images("nn", args, index_file=identities_index, device=device,
+                                                transform=transform)
     data_sources["nn"] = nn_images
 
-    neutral_images = forget_values_ds_type_to_images("neutral", args, index_file=identities_index, device=device, transform=transform)
+    neutral_images = forget_values_ds_type_to_images("neutral", args, index_file=identities_index, device=device,
+                                                     transform=transform)
     data_sources[f"neutral_unseen"] = neutral_images
     if memory_efficient:
         raw_data_nll_dict = {}
@@ -673,19 +685,22 @@ def compare_forget_values_fast(exp_dir, reps=10, split='valid', partial=10000, d
             cur_keys = data_sources_keys[start:end]
             cur_data = {k: data_sources[k] for k in cur_keys}
             cur_result = get_model_nll_on_multiple_data_sources(model, device, cur_data, reps=reps,
-                                                               n_bins=2 ** args.n_bits)
+                                                                n_bins=2 ** args.n_bits)
             raw_data_nll_dict.update(cur_result)
     else:
         raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps,
-                                                               n_bins=2 ** args.n_bits)
+                                                                   n_bins=2 ** args.n_bits)
     del model
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
     with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         trained_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
     if eval_relatives:
-        relatives = {ds_name: nll_to_sigma_normalized(nll_tensor, trained_mean, trained_std, return_torch=False) for ds_name, nll_tensor in raw_data_nll_dict.items()}
-        relatives.update({ds_name + "_mean": (sum(rels) / len(rels) if hasattr(rels, "__iter__") else rels) for ds_name, rels in relatives.items()})
+        relatives = {ds_name: nll_to_sigma_normalized(nll_tensor, trained_mean, trained_std, return_torch=False) for
+                     ds_name, nll_tensor in raw_data_nll_dict.items()}
+        relatives.update(
+            {ds_name + "_mean": (sum(rels) / len(rels) if hasattr(rels, "__iter__") else rels) for ds_name, rels in
+             relatives.items()})
     quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, trained_mean, trained_std),
                                                        return_torch=False) for ds_name, nll_tensor in
                  raw_data_nll_dict.items()}
@@ -711,14 +726,17 @@ def compare_forget_values_fast(exp_dir, reps=10, split='valid', partial=10000, d
             cur_keys = data_sources_keys[start:end]
             cur_data = {k: data_sources[k] for k in cur_keys}
             cur_result = get_model_nll_on_multiple_data_sources(base_model, device, cur_data, reps=reps,
-                                                               n_bins=2 ** args.n_bits)
+                                                                n_bins=2 ** args.n_bits)
             base_raw_data_nll_dict.update(cur_result)
     else:
         base_raw_data_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, data_sources, reps=reps,
-                                                                    n_bins=2 ** args.n_bits)
+                                                                        n_bins=2 ** args.n_bits)
     if eval_relatives:
-        base_relatives = {ds_name: nll_to_sigma_normalized(nll_tensor, base_mean, base_std, return_torch=False) for ds_name, nll_tensor in base_raw_data_nll_dict.items()}
-        base_relatives.update({ds_name + "_mean": (sum(rels) / len(rels)) if hasattr(rels, "__iter__") else rels for ds_name, rels in base_relatives.items()})
+        base_relatives = {ds_name: nll_to_sigma_normalized(nll_tensor, base_mean, base_std, return_torch=False) for
+                          ds_name, nll_tensor in base_raw_data_nll_dict.items()}
+        base_relatives.update(
+            {ds_name + "_mean": (sum(rels) / len(rels)) if hasattr(rels, "__iter__") else rels for ds_name, rels in
+             base_relatives.items()})
         relatives['base'] = base_relatives
     base_quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, base_mean, base_std),
                                                             return_torch=False) for ds_name, nll_tensor in
@@ -762,7 +780,7 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000, device
     ref_ds = Subset(ref_ds, np.random.choice(len(ref_ds), 100, replace=False))
     data_sources["ref_random"] = ref_ds
 
-    #add nearest neighbor data
+    # add nearest neighbor data
     assert args.data_split == 'train'
     number_nn = 5
     with open("outputs/celeba_stats/identity2indices.json", 'r') as f:
@@ -787,27 +805,35 @@ def compare_forget_values(exp_dir, reps=10, split='valid', partial=10000, device
         cur_ds = get_partial_dataset(transform=transform, **ds_params)
         data_sources[f"neutral_unseen_{i}"] = cur_ds
 
-
-    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps, n_bins=2 ** args.n_bits)
+    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps,
+                                                               n_bins=2 ** args.n_bits)
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
     with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         trained_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
-    quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, trained_mean, trained_std), return_torch=False) for ds_name, nll_tensor in raw_data_nll_dict.items()}
-    quantiles.update({ds_name + "_mean": (sum(quants) / len(quants) if hasattr(quants, "__iter__") else quants) for ds_name, quants in quantiles.items()})
-
+    quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, trained_mean, trained_std),
+                                                       return_torch=False) for ds_name, nll_tensor in
+                 raw_data_nll_dict.items()}
+    quantiles.update(
+        {ds_name + "_mean": (sum(quants) / len(quants) if hasattr(quants, "__iter__") else quants) for ds_name, quants
+         in quantiles.items()})
 
     # now evaluating all these data sources on the base model
-    with open(f"models/baseline/continue_celeba/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
+    with open(f"models/baseline/continue_celeba/distribution_stats/{split}{partial_suffix}/distribution.json",
+              "r") as f:
         base_model_distribution = json.load(f)['nll']
     base_mean, base_std = base_model_distribution['mean'], base_model_distribution['std']
     base_args = get_base_model_args()
     base_model = load_model(base_args, device, training=False)
 
     base_raw_data_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, data_sources, reps=reps,
-                                                               n_bins=2 ** args.n_bits)
-    base_quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, base_mean, base_std), return_torch=False) for ds_name, nll_tensor in base_raw_data_nll_dict.items()}
-    base_quantiles.update({ds_name + "_mean": (sum(quants) / len(quants)) if hasattr(quants, "__iter__") else quants for ds_name, quants in base_quantiles.items()})
+                                                                    n_bins=2 ** args.n_bits)
+    base_quantiles = {ds_name: rel_dist2likelihood_qunatile(nll_to_sigma_normalized(nll_tensor, base_mean, base_std),
+                                                            return_torch=False) for ds_name, nll_tensor in
+                      base_raw_data_nll_dict.items()}
+    base_quantiles.update(
+        {ds_name + "_mean": (sum(quants) / len(quants)) if hasattr(quants, "__iter__") else quants for ds_name, quants
+         in base_quantiles.items()})
 
     quantiles["base"] = base_quantiles
     save_dict_as_json(quantiles, f"{exp_dir}/distribution_stats/{split}{partial_suffix}/forget_quantiles.json")
@@ -835,12 +861,14 @@ def get_base_model_score_on_neutral_ids(save_path, num_ids_per_set=5, reps=10, p
     raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps,
                                                                n_bins=2 ** base_args.n_bits)
     partial_suffix = f"_partial_{partial}" if partial > 0 else ""
-    with open(f"models/baseline/continue_celeba/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
+    with open(f"models/baseline/continue_celeba/distribution_stats/{split}{partial_suffix}/distribution.json",
+              "r") as f:
         base_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = base_model_distribution['mean'], base_model_distribution['std']
     sigma_normalized_results = {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
                                 for ds_name, nll_tensor in raw_data_nll_dict.items()}
-    quantile_normalized_results = {k: rel_dist2likelihood_qunatile(v, return_torch=False) for k, v in sigma_normalized_results.items()}
+    quantile_normalized_results = {k: rel_dist2likelihood_qunatile(v, return_torch=False) for k, v in
+                                   sigma_normalized_results.items()}
     save_dict_as_json(quantile_normalized_results, save_path)
 
 
@@ -990,8 +1018,10 @@ def get_identity_attributes_stats(identity: int):
         print("Attribute: ", CELEBA_ATTRIBUTES_MAP[j], " count: ", acc[j].item())
 
 
-def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=10000, eval_base=False, save_dir=None, device=None, reps=10):
-    assert os.path.isfile(f"{exp_dir}/distribution_stats/{split}_partial_{partial}/distribution.json"), f"no distribution.json file in {exp_dir}/distribution_stats/{split}_partial_{partial}"
+def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=10000, eval_base=False, save_dir=None,
+                           device=None, reps=10):
+    assert os.path.isfile(
+        f"{exp_dir}/distribution_stats/{split}_partial_{partial}/distribution.json"), f"no distribution.json file in {exp_dir}/distribution_stats/{split}_partial_{partial}"
     with open(f"{exp_dir}/args.json", "r") as args_f:
         args = edict(json.load(args_f))
     args.ckpt_path = f"{exp_dir}/checkpoints/model_last.pt"
@@ -999,14 +1029,17 @@ def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(args, device)
 
-    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps, n_bins=2 ** args.n_bits)
+    raw_data_nll_dict = get_model_nll_on_multiple_data_sources(model, device, data_sources, reps=reps,
+                                                               n_bins=2 ** args.n_bits)
     sigma_normalized_results = {}
     if eval_base:
         base_data_sources = {"base" + k: v.clone() for k, v in data_sources.items()}
         base_args = get_base_model_args()
         base_model = load_model(base_args, device=device, training=False)
-        base_raw_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, base_data_sources, reps=reps, n_bins=2 ** args.n_bits)
-        with open(f"models/baseline/continue_celeba/distribution_stats/{split}_partial_{partial}/distribution.json", "r") as base_dist_j:
+        base_raw_nll_dict = get_model_nll_on_multiple_data_sources(base_model, device, base_data_sources, reps=reps,
+                                                                   n_bins=2 ** args.n_bits)
+        with open(f"models/baseline/continue_celeba/distribution_stats/{split}_partial_{partial}/distribution.json",
+                  "r") as base_dist_j:
             base_model_distribution = json.load(base_dist_j)['nll']
             base_mean, base_std = base_model_distribution['mean'], base_model_distribution['std']
         base_sigma_normalized_results = {
@@ -1023,8 +1056,9 @@ def evaluate_model_on_data(data_sources: Dict, exp_dir, split='valid', partial=1
     with open(f"{exp_dir}/distribution_stats/{split}{partial_suffix}/distribution.json", "r") as f:
         trained_model_distribution = json.load(f)['nll']
     trained_mean, trained_std = trained_model_distribution['mean'], trained_model_distribution['std']
-    sigma_normalized_results.update({ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
-                                for ds_name, nll_tensor in raw_data_nll_dict.items() if 'base' not in ds_name})
+    sigma_normalized_results.update(
+        {ds_name + "_mean": nll_to_sigma_normalized(nll_tensor.mean(), trained_mean, trained_std)
+         for ds_name, nll_tensor in raw_data_nll_dict.items() if 'base' not in ds_name})
     if not os.path.isdir(f"{save_dir}/{split}{partial_suffix}"):
         os.mkdir(f"{save_dir}/{split}{partial_suffix}")
     cur_normalized_sigma_path = f"{save_dir}/{split}{partial_suffix}/forget_info.json"
@@ -1067,7 +1101,8 @@ def plot_weights_diff():
     # normalizing total weights in the number of iterations
     graph_names = [f'block{i}' for i in range(4)] + ['total']
     for cur_name in graph_names:
-        attributes_values = {k.split("/")[-1]: attributes_json[k][cur_name] / attributes_json[k]['n_iter'] for k in attributes_json}
+        attributes_values = {k.split("/")[-1]: attributes_json[k][cur_name] / attributes_json[k]['n_iter'] for k in
+                             attributes_json}
         forget_identities_json_path = f"{weights_base_path}/forget_identity_weights_diff.json"
         with open(forget_identities_json_path, "r") as id_json:
             id_json = json.load(id_json)
@@ -1164,8 +1199,9 @@ def create_table_data(base_dir: str, out_dir, split='valid', compute_relatives=F
         relevant_data_dicts = []
         for j in jsons_paths:
             with open(j) as f:
-                relevant_data_dicts.append({k: (v if not isinstance(v, dict) else {k2: v2 for k2, v2 in v.items() if "mean" in k2})
-                                            for k, v in json.load(f).items() if "mean" in k or isinstance(v, dict)})
+                relevant_data_dicts.append(
+                    {k: (v if not isinstance(v, dict) else {k2: v2 for k2, v2 in v.items() if "mean" in k2})
+                     for k, v in json.load(f).items() if "mean" in k or isinstance(v, dict)})
         out = accumulate_helper(relevant_data_dicts)
         save_dict_as_json(out, f"{out_dir}/{n}.json")
 
@@ -1197,9 +1233,12 @@ class TableRow:
         self.forget_tamed = data['forget_mean']
         if not self.qunatiles_mode:
             self.forget_diff = self.forget_base - self.forget_tamed
-            self.forget_ref = compute_forgetting_factor(data['base']['ref_forget_identity_mean'], data['ref_forget_identity_mean'], self.forget_diff)
-            self.remember = compute_forgetting_factor(data['base']['ref_random_mean'], data['ref_random_mean'], self.forget_diff)
-            self.neutral = compute_forgetting_factor(data['base']['neutral_mean'], data['neutral_mean'], self.forget_diff)
+            self.forget_ref = compute_forgetting_factor(data['base']['ref_forget_identity_mean'],
+                                                        data['ref_forget_identity_mean'], self.forget_diff)
+            self.remember = compute_forgetting_factor(data['base']['ref_random_mean'], data['ref_random_mean'],
+                                                      self.forget_diff)
+            self.neutral = compute_forgetting_factor(data['base']['neutral_mean'], data['neutral_mean'],
+                                                     self.forget_diff)
             self.nn = compute_forgetting_factor(data['base']['nn_mean'], data['nn_mean'], self.forget_diff)
         else:
             self.forget_ref_base = data['base']['ref_forget_identity_mean']
@@ -1211,10 +1250,13 @@ class TableRow:
             self.nn_base = data['base']['nn_mean']
             self.nn_tamed = data['nn_mean']
         if self.raw_mode:
-            self.timing = data['timing_iterations_mean'] * TIME_PER_ITER_TAME / 60  # divide by 60 for seconds -> minutes conversion
+            self.timing = data[
+                              'timing_iterations_mean'] * TIME_PER_ITER_TAME / 60  # divide by 60 for seconds -> minutes conversion
 
     def __quantiles_str(self):
-        print_order = [self.forget_base, self.forget_tamed, self.forget_ref_base, self.forget_ref_tamed, self.remember_base, self.remember_tamed, self.neutral_base, self.neutral_tamed, self.nn_base, self.nn_tamed]
+        print_order = [self.forget_base, self.forget_tamed, self.forget_ref_base, self.forget_ref_tamed,
+                       self.remember_base, self.remember_tamed, self.neutral_base, self.neutral_tamed, self.nn_base,
+                       self.nn_tamed]
         print_str = f"{self.n_images}&"
         for idx, cur_num in enumerate(print_order):
             cur_num = rel_dist2likelihood_qunatile(cur_num, return_torch=False)
@@ -1227,7 +1269,9 @@ class TableRow:
         return print_str
 
     def __quantile_drop_str(self):
-        print_order = [compute_quantile_drop(rel_dist2likelihood_qunatile(theta_b, return_torch=False), rel_dist2likelihood_qunatile(theta_t, return_torch=False)) for theta_b, theta_t in
+        print_order = [compute_quantile_drop(rel_dist2likelihood_qunatile(theta_b, return_torch=False),
+                                             rel_dist2likelihood_qunatile(theta_t, return_torch=False)) for
+                       theta_b, theta_t in
                        [(self.forget_base, self.forget_tamed),
                         (self.forget_ref_base, self.forget_ref_tamed),
                         (self.remember_base, self.remember_tamed),
@@ -1288,9 +1332,11 @@ class TableRow:
         forget_values_order = [(self.forget_base, self.forget_tamed),
                                (self.forget_ref_base, self.forget_ref_tamed),
                                (self.remember_base, self.remember_tamed),
-                               (self.neutral_base, self.neutral_tamed), (self.nn_base,self.nn_tamed)]
+                               (self.neutral_base, self.neutral_tamed), (self.nn_base, self.nn_tamed)]
         for base_num, tamed_num in forget_values_order:
-            base_num, tamed_num = rel_dist2likelihood_qunatile(base_num, return_torch=False), rel_dist2likelihood_qunatile(tamed_num, return_torch=False)
+            base_num, tamed_num = rel_dist2likelihood_qunatile(base_num,
+                                                               return_torch=False), rel_dist2likelihood_qunatile(
+                tamed_num, return_torch=False)
 
             print_str += self.__get_num_by_precision(base_num) + "&"
             print_str += self.__get_num_by_precision(tamed_num) + "&"
@@ -1298,7 +1344,6 @@ class TableRow:
         print_str += f"{self.timing:.1f}" + r"\tabularnewline"
 
         return print_str
-
 
 
 def print_new_table(input_files_dir: str, save_path='', verbose=False, **args):
@@ -1333,11 +1378,13 @@ def get_base_model_likelihood_on_test_identities(out_dir='', data_split='train')
         cur_ds = args2dataset(args, "forget", transform)
         data_sources[str(identity)] = cur_ds
     raw_nll = get_model_nll_on_multiple_data_sources(model, device, data_sources, n_bins=2 ** args.n_bits)
-    with open(f"models/baseline/continue_celeba/distribution_stats/{data_split}_partial_10000/distribution.json") as base_json:
+    with open(
+            f"models/baseline/continue_celeba/distribution_stats/{data_split}_partial_10000/distribution.json") as base_json:
         base_dist = json.load(base_json)
         mean, sigma = base_dist["nll"]["mean"], base_dist["nll"]["std"]
     rel_dist = {ds_name: [(nll - mean) / sigma for nll in nll_vals] for ds_name, nll_vals in raw_nll.items()}
-    quantiles_dict = {ds_name: [rel_dist2likelihood_qunatile(cur, return_torch=False) for cur in rel_dist] for ds_name, rel_dist in rel_dist.items()}
+    quantiles_dict = {ds_name: [rel_dist2likelihood_qunatile(cur, return_torch=False) for cur in rel_dist] for
+                      ds_name, rel_dist in rel_dist.items()}
     out_file = f"{out_dir}/quantiles.json"
     if os.path.isfile(out_file):
         with open(out_file, "r") as cur_j:
@@ -1363,9 +1410,10 @@ def get_timing(base_dir, out_dir=''):
         os.makedirs(out_dir, exist_ok=True)
     out = {}
     for n in n_images:
-        cur_out = {'timing_iterations': time_values[n],
-               'timing_iterations_mean': sum(time_values[n]) / len(time_values[n]),
-                   'timing_iterations_std': np.std(time_values[n]).item()}
+        cur_out = iterations2time_mean_std(time_values[n], time_per_iter=TIME_PER_ITER_TAME)
+        # cur_out = {'timing_iterations': time_values[n],
+        #            'timing_iterations_mean': sum(time_values[n]) / len(time_values[n]),
+        #            'timing_iterations_std': np.std(time_values[n]).item()}
         if out_dir:
             out_file = f"{out_dir}/{n}.json"
             if os.path.isfile(out_file):
@@ -1377,22 +1425,13 @@ def get_timing(base_dir, out_dir=''):
     return out
 
 
-def accumulate_stats_with_std(data_dicts: List[dict]) -> dict:
-    assert data_dicts, "expecting data_dicts as a non empty list of dictionaries"
-    accumulated = {}
-    for d in data_dicts:
-        for k, v in d.items():
-            if isinstance(v, dict):
-                if k not in accumulated:
-                    accumulated[k] = {}
-                for k2, v2 in v.items():
-                    new_key = k2.replace("_mean", "")
-                    accumulated[k][new_key] = accumulated[k].get(new_key, []) + [v2]
-            else:
-                new_key = k.replace("_mean", "")
-                accumulated[new_key] = accumulated.get(new_key, []) + [v]
-
+def accumulate_stats_with_std(data_dicts: List[dict], thresh=4, data_is_relative=True) -> dict:
+    accumulated = accumulate_dicts_stats(data_dicts)
+    passed_thresh = np.mean(accumulated['forget']) > thresh - 0.15 * thresh  # 0.15 is the epsilon bound in the paper
     out = {'forget': [], 'ref_forget': [], 'ref_random': [], 'neutral': [], 'nn': []}
+
+    # convert relative distance to likelihood quantile, or just use an identity function with extra dummy parameter
+    relative_func = rel_dist2likelihood_qunatile if data_is_relative else lambda x, _: x
     for idx in range(len(data_dicts)):
         # compute quantile drops
         forget_base = accumulated['base']['forget'][idx]
@@ -1407,61 +1446,202 @@ def accumulate_stats_with_std(data_dicts: List[dict]) -> dict:
         nn_tamed = accumulated['nn'][idx]
 
         for theta_b, theta_t, name in [(forget_base, forget_tamed, 'forget'),
-                        (forget_ref_base, forget_ref_tamed, 'ref_forget'),
-                        (remember_base, remember_tamed, 'ref_random'),
-                        (neutral_base, neutral_tamed, 'neutral'),
-                        (nn_base, nn_tamed, 'nn')]:
-            out[name].append(compute_quantile_drop(rel_dist2likelihood_qunatile(theta_b, return_torch=False),
-                                                   rel_dist2likelihood_qunatile(theta_t, return_torch=False)))
+                                       (forget_ref_base, forget_ref_tamed, 'ref_forget'),
+                                       (remember_base, remember_tamed, 'ref_random'),
+                                       (neutral_base, neutral_tamed, 'neutral'),
+                                       (nn_base, nn_tamed, 'nn')]:
+            out[name].append(compute_quantile_drop(relative_func(theta_b, return_torch=False),
+                                                   relative_func(theta_t, return_torch=False)))
     for k, v in out.items():
         out[k] = {'mean': np.mean(v).item(), 'std': np.std(v).item()}
+    out['passed_thresh'] = str(passed_thresh)
     return out
 
 
-def get_tables_raw_data_with_std(base_dir, out_dir='', split='train'):
-    min_val, max_val, avg_val = np.inf, -np.inf, 0
+class TableRowStd:
+    def __init__(self, n_images, json_p, precision=2, supp_data=False):
+        if isinstance(json_p, str):
+            with open(json_p) as input_j:
+                data = json.load(input_j)
+        elif isinstance(json_p, dict):
+            data = json_p
+        else:
+            raise ValueError("Error data validation")
+        self.precision = precision
+        self.n_images = n_images
+        self.data = data
+        self.supp_data = supp_data
+        if supp_data:
+            self.print_order = [[f"{cur_set}_base", f"{cur_set}_tamed", f"{cur_set}_qd"] for cur_set in
+                                ['forget', 'ref_forget_identity', 'ref_random', 'neutral_unseen', 'nn']]
+            self.print_order = [item for sublist in self.print_order for item in sublist]
+            if 'timing' in data.keys():
+                self.print_order.append('timing')
+        else:
+            self.print_order = ['forget', 'ref_forget', 'ref_random', 'neutral', 'nn']
+
+    def __str__(self) -> str:
+        print_str = f"{self.n_images}&" + r"\multicolumn{1}{c}{\greencheck}&"
+        for idx, cur_name in enumerate(self.print_order):
+            cur_data = self.data[cur_name]
+            print_str += self.__get_num_by_precision(cur_data['mean'], cur_data['std'])
+
+            if idx != len(self.print_order) - 1:
+                print_str += "&"
+            else:
+                print_str += r"\tabularnewline"
+        return print_str
+
+    def __get_num_by_precision(self, mean, std) -> str:
+        return_str = ''
+        if abs(mean) >= (10 ** (-1 * self.precision)) / 2:
+            # round up from half decimal, so numbers in [1/2 * 10{-(precision + 1)}, infinity)
+            # e.g. precision=2 this is [0.005, infinity)
+            return_str += f"${mean:.{self.precision}f}"
+        else:
+            # find the closest power of 10 that is greater.
+            # e.g. for 0.001 we will return < 10^{-2}
+            cur_precision = self.precision + 1
+            while True:
+                if abs(mean) > (10 ** (-1 * cur_precision)):
+                    return_str += r"$<10^{-" + str(cur_precision - 1) + "}"
+                    break
+                cur_precision += 1
+        return_str += fr'\pm {std:.{self.precision}f}$'
+        return return_str
+
+
+def accumulate_stats_with_std_supp(data_dicts: List[dict], thresh=4, data_is_relative=True) -> dict:
+    accumulated = accumulate_dicts_stats(data_dicts)
+    passed_thresh = np.mean(accumulated['forget']) > thresh - 0.15 * thresh  # 0.15 is the epsilon bound in the paper
+    main_categories = ['forget', 'ref_forget_identity', 'ref_random', 'neutral_unseen', 'nn']
+    out = {f"{cat}_{sub_cat}": [] for cat in main_categories for sub_cat in ['base', 'tamed', 'qd']}
+
+    # convert relative distance to likelihood quantile, or just use an identity function with extra dummy parameter
+    relative_func = rel_dist2likelihood_qunatile if data_is_relative else lambda x, _: x
+    for idx in range(len(data_dicts)):
+        for cat in main_categories:
+            base = relative_func(accumulated['base'][cat][idx], return_torch=False)
+            tamed = relative_func(accumulated[cat][idx], return_torch=False)
+            out[f"{cat}_base"].append(base)
+            out[f"{cat}_tamed"].append(tamed)
+            out[f"{cat}_qd"].append(compute_quantile_drop(base, tamed))
+
+    for k, v in out.items():
+        out[k] = {'mean': np.mean(v).item(), 'std': np.std(v).item()}
+    out['passed_thresh'] = str(passed_thresh)
+    return out
+
+
+def accumulate_dicts_stats(data_dicts):
+    assert data_dicts, "expecting data_dicts as a non empty list of dictionaries"
+    accumulated = {}
+    for d in data_dicts:
+        for k, v in d.items():
+            if isinstance(v, dict):
+                if k not in accumulated:
+                    accumulated[k] = {}
+                for k2, v2 in v.items():
+                    new_key = k2.replace("_mean", "")
+                    accumulated[k][new_key] = accumulated[k].get(new_key, []) + [v2]
+            else:
+                new_key = k.replace("_mean", "")
+                accumulated[new_key] = accumulated.get(new_key, []) + [v]
+    return accumulated
+
+
+def get_tables_raw_data_with_std(base_dir, out_dir='', split='train', supp_data=False):
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    with open(f"{base_dir}/{os.listdir(base_dir)[0]}/args.json") as f:
+        thresh = json.load(f)['forget_thresh']
     for n in [1, 4, 8, 15]:
+        data_is_relative = True
         jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_relatives.json")
+        if not jsons_paths:
+            data_is_relative = False
+            jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_quantiles.json")
+            assert jsons_paths, f"no jsons found for {n} images"
         relevant_data_dicts = []
         for j in jsons_paths:
             with open(j) as f:
                 relevant_data_dicts.append(
                     {k: (v if not isinstance(v, dict) else {k2: v2 for k2, v2 in v.items() if "mean" in k2})
                      for k, v in json.load(f).items() if "mean" in k or isinstance(v, dict)})
-        out = accumulate_stats_with_std(relevant_data_dicts)
-        min_val = min(min_val, min([v['std'] for v in out.values()]))
-        max_val = max(max_val, max([v['std'] for v in out.values()]))
-        avg_val += np.mean([v['std'] for v in out.values()])
+        if not supp_data:
+            out = accumulate_stats_with_std(relevant_data_dicts, thresh=thresh, data_is_relative=data_is_relative)
+        else:
+            out = accumulate_stats_with_std_supp(relevant_data_dicts, thresh=thresh, data_is_relative=data_is_relative)
         if out_dir:
             save_dict_as_json(out, f"{out_dir}/{n}.json")
-    avg_val /= 4
 
 
 @torch.no_grad()
 def save_bpd_several_models(models_paths: List[str], args, dl, save_path):
     out_dict = {}
     for model_p in models_paths:
-        args.ckpt_path = cifar_model_ckpt
+        args.ckpt_path = model_p
         model = load_model(args, device)
         bpd = compute_dataloader_bpd(2 ** args.n_bits, args.img_size, model, device, data_loader=dl, reduce=True)
         out_dict[model_p] = bpd
     save_dict_as_json(out_dict, save_path)
 
 
-if __name__ == '__main__':
-    set_all_seeds(seed=37)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def base_dir2table(base_dir, jsons_out_dir, split='train', save_path='', supp_data=False):
+    save_str = ''
+    if not all(os.path.exists(f"{jsons_out_dir}/{n}.json") for n in [1, 4, 8, 15]):
+        get_tables_raw_data_with_std(base_dir=base_dir, out_dir=jsons_out_dir, split=split, supp_data=supp_data)
+    for n in [1, 4, 8, 15]:
+        with open(f"{jsons_out_dir}/{n}.json") as f:
+            data = json.load(f)
+        row = str(TableRowStd(n, data, supp_data=supp_data))
+        print(row)
+        save_str += row
+        if n != 15:
+            row += '\n'
+    if save_path:
+        with open(save_path, 'w') as f:
+            f.write(save_str)
 
+
+def iterations2time_mean_std(iterations: Union[List[int], torch.Tensor, np.ndarray, str],
+                             time_per_iter=TIME_PER_ITER_TAME):
+    """
+    return the mean and std of the time it takes to run the given number of iterations
+    :param iterations: can be a list of ints, a torch tensor, a numpy array with the iterations, or a string
+    with a path to a json with the iterations
+    :param time_per_iter: constant time per iteration
+    :return:
+    """
+    SECONDS_IN_MINUTE = 60
+    if isinstance(iterations, str):
+        with open(iterations) as f:
+            iterations = json.load(f)['timing_iterations']
+    if isinstance(iterations, torch.Tensor):
+        iterations = iterations.cpu().numpy()
+    elif isinstance(iterations, list):
+        iterations = np.array(iterations)
+
+    return {'mean': np.mean(iterations * time_per_iter / SECONDS_IN_MINUTE),
+            'std': np.std(iterations * time_per_iter / SECONDS_IN_MINUTE)}
+
+
+if __name__ == '__main__':
     # set logging to debug mode
     logging.basicConfig(level=logging.DEBUG)
+    set_all_seeds(seed=37)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    base_dir = "/mnt/raid/home/shimon_malnik/glow/experiments/forget_identity_thresh_4_on_server"
+    # out_dir = '/mnt/raid/home/shimon_malnik/glow/outputs/forget_identity_thresh_4_train_quantiles_std_all_data'
+    out_dir = "/mnt/raid/home/shimon_malnik/glow/outputs/forget_identity_thresh_4_train_supp"
 
-    base_dir = "experiments/train/train_cifar"
-    cifar_model_ckpt = f"{base_dir}/checkpoints/model_270001.pt"
-    models_paths = [cifar_model_ckpt]
-    # models_paths = glob(f"{base_dir}/checkpoints/model_*.pt")
-    with open(f"{base_dir}/args.json") as f:
-        args = EasyDict(json.load(f))
-    transform = get_default_forget_transform(args.img_size, args.n_bits)
-    ds = get_dataset(args.path, args.img_size, data_split=args.data_split, transform=transform)
-    dl = DataLoader(ds, batch_size=2048, shuffle=False, num_workers=8)
-    save_bpd_several_models(models_paths, args, dl, f"{base_dir}/bpd.json")
+    # get_tables_raw_data_with_std(base_dir=base_dir, out_dir=out_dir, supp_data=True)
+    # for n in [1, 4, 8, 15]:
+    #     cur_dict = f"/mnt/raid/home/shimon_malnik/glow/outputs/forget_identity_thresh_4_train_quantiles_drop/{n}.json"
+    #     out_dict = iterations2time_mean_std(cur_dict)
+    #     with open(f"{out_dir}/{n}.json", 'r') as f:
+    #         old_data = json.load(f)
+    #     old_data['timing'] = out_dict
+    #     save_dict_as_json(old_data, f"{out_dir}/{n}.json")
+
+    base_dir2table(base_dir, out_dir, supp_data=True, save_path=f"{out_dir}/table.txt")
