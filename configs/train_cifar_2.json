@@ -1,0 +1,19 @@
+{
+    "batch": 256,
+    "iter":  500000,
+    "n_flow": 48,
+    "n_block": 3,
+    "no_lu": false,
+    "affine":  false,
+    "n_bits": 5,
+    "lr": 1e-4,
+    "img_size": 32,
+    "temp": 1.0,
+    "n_sample": 20,
+    "path": "../datasets/cifar",
+    "data_split": "train",
+    "exp_name": "train_cifar_frog_truck",
+    "num_workers": 8,
+    "devices": -1,
+    "training_labels": "6,9"
+}
