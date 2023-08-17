@@ -1,3 +1,4 @@
+import pdb
 import math
 import logging
 import os
@@ -7,7 +8,6 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from glob import glob
 from os.path import join
 from typing import Union, List, Dict, Optional, Callable
-
 import torchvision
 from statsmodels.graphics.gofplots import qqplot
 import plotly
@@ -21,13 +21,13 @@ from scipy.stats import kstest, norm
 from scipy.stats import probplot
 from torchvision import transforms
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor, RandomHorizontalFlip
-from datasets import CelebAPartial
+from datasets import CelebAPartial, Cub2011Dataset
 from model import Glow
 import torch
 from easydict import EasyDict
 import json
 import torchvision.datasets as vision_datasets
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from arcface_model import Backbone
 from torchvision.models import resnet50
 from torch.multiprocessing import Process, set_start_method
@@ -36,7 +36,8 @@ from torch.multiprocessing import Process, set_start_method
 if 'CELEBA_ROOT' in os.environ:
     CELEBA_ROOT = os.environ['CELEBA_ROOT']
 else:
-    CELEBA_ROOT = "/a/home/cc/students/cs/malnick/thesis/datasets/celebA"
+    CELEBA_ROOT = "/mnt/raid/home/shimon_malnik/datasets"
+CUB_ROOT = "/mnt/raid/home/shimon_malnik/datasets/cub_200_2011"
 FFHQ_ROOT = '/a/home/cc/students/cs/malnick/thesis/datasets/ffhq-128'
 CELEBA_NUM_IDENTITIES = 10177
 CELEBA_MALE_ATTR_IDX = 20
@@ -89,6 +90,7 @@ def get_args(**kwargs) -> EasyDict:
     parser.add_argument('--sample_name', help='Name of sample size in case of evaluation')
     parser.add_argument('--exp_name', help='Name experiment for saving dirs')
     parser.add_argument('--num_workers', help='Number of worker threads for dataloader', type=int)
+    parser.add_argument('--training_labels', help='if training is only on some labels, specify them here, comma seperated')
     parser.add_argument('--config', '-c',
                         help='Name of json config file (optional) cmd will be overriden by file option')
     parser.add_argument('--devices', help='number of gpu devices to use', type=int)
@@ -182,6 +184,8 @@ def get_dataset(data_root_path, image_size, **kwargs):
             ds = vision_datasets.CIFAR100(data_root_path, transform=transform, download=True, train=train)
         else:  # cifar10
             ds = vision_datasets.CIFAR10(data_root_path, transform=transform, download=True, train=train)
+    elif 'cub' in data_root_path.lower():
+        ds = Cub2011Dataset(root=data_root_path, transform=transform, train=True)
     else:
         ds = vision_datasets.ImageFolder(data_root_path, transform=transform)
     return ds
@@ -196,6 +200,15 @@ def get_dataloader(data_root_path, batch_size, image_size, num_workers=8, datase
 def sample_data(data_root_path, batch_size, image_size, num_workers=8, dataset=None, **kwargs):
     if dataset is None:
         dataset = get_dataset(data_root_path, image_size, **kwargs)
+    if 'training_labels' in kwargs and kwargs['training_labels']:
+        training_labels = [int(label) for label in kwargs['training_labels'].split(',')]
+        # find the labels in the training set
+        indices = []
+        for idx in range(len(dataset)):
+            _, label = dataset[idx]
+            if label in training_labels:
+                indices.append(idx)
+        dataset = Subset(dataset, indices)
     logging.info(f"loading Data Set of size: {len(dataset)}")
     loader = get_dataloader(data_root_path, batch_size, image_size, num_workers, dataset=dataset)
     loader = iter(loader)

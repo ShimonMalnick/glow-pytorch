@@ -1,4 +1,9 @@
+import os
+import pdb
 from typing import Union, Optional, List, Callable
+from torchvision.datasets import VisionDataset
+from torchvision.datasets.folder import default_loader
+import pandas as pd
 from torch.utils.data import Dataset, Sampler
 from PIL import Image
 import torch
@@ -148,3 +153,80 @@ class RandomDataset(Dataset):
             img = torch.clamp(img, -0.5, 0.5)
 
         return img, 0
+
+
+class Cub2011Dataset(VisionDataset):
+    """`CUB-200-2011 <http://www.vision.caltech.edu/visipedia/CUB-200-2011.html>`_ Dataset.
+
+        Args:
+            root (string): Root directory of the dataset.
+            train (bool, optional): If True, creates dataset from training set, otherwise
+               creates from test set.
+            transform (callable, optional): A function/transform that  takes in an PIL image
+               and returns a transformed version. E.g, ``transforms.RandomCrop``
+            target_transform (callable, optional): A function/transform that takes in the
+               target and transforms it.
+            download (bool, optional): If true, downloads the dataset from the internet and
+               puts it in root directory. If dataset is already downloaded, it is not
+               downloaded again.
+    """
+    base_folder = 'CUB_200_2011/images'
+    # url = 'https://data.caltech.edu/records/65de6-vp158/files/CUB_200_2011.tgz'
+    filename = 'CUB_200_2011.tgz'
+    tgz_md5 = '97eceeb196236b17998738112f37df78'
+
+    def __init__(self, root, train=True, transform=None, target_transform=None):
+        super(Cub2011Dataset, self).__init__(root, transform=transform, target_transform=target_transform)
+
+        self.loader = default_loader
+        self.train = train
+
+        if not self._check_integrity():
+            raise RuntimeError('Dataset not found or corrupted. You can use download=True to download it')
+
+    def _load_metadata(self):
+        images = pd.read_csv(os.path.join(self.root, 'CUB_200_2011', 'images.txt'), sep=' ',
+                             names=['img_id', 'filepath'])
+        image_class_labels = pd.read_csv(os.path.join(self.root, 'CUB_200_2011', 'image_class_labels.txt'),
+                                         sep=' ', names=['img_id', 'target'])
+        train_test_split = pd.read_csv(os.path.join(self.root, 'CUB_200_2011', 'train_test_split.txt'),
+                                       sep=' ', names=['img_id', 'is_training_img'])
+
+        data = images.merge(image_class_labels, on='img_id')
+        self.data = data.merge(train_test_split, on='img_id')
+
+        class_names = pd.read_csv(os.path.join(self.root, 'CUB_200_2011', 'classes.txt'),
+                                  sep=' ', names=['class_name'], usecols=[1])
+        self.class_names = class_names['class_name'].to_list()
+        if self.train:
+            self.data = self.data[self.data.is_training_img == 1]
+        else:
+            self.data = self.data[self.data.is_training_img == 0]
+
+    def _check_integrity(self):
+        try:
+            self._load_metadata()
+        except Exception:
+            return False
+
+        for index, row in self.data.iterrows():
+            filepath = os.path.join(self.root, self.base_folder, row.filepath)
+            if not os.path.isfile(filepath):
+                print(filepath)
+                return False
+        return True
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        sample = self.data.iloc[idx]
+        path = os.path.join(self.root, self.base_folder, sample.filepath)
+        target = torch.tensor(sample.target - 1)  # Targets start at 1 by default, so shift to 0
+        img = self.loader(path)
+
+        if self.transform is not None:
+            img = self.transform(img)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        return img, target
