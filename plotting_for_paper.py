@@ -1,12 +1,16 @@
 import json
 import math
 import os
+import pdb
 import re
+from matplotlib import font_manager
+from typing import NamedTuple, Optional
+import shutil
 from glob import glob
 from typing import List, Union
 import plotly.graph_objects as go
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from easydict import EasyDict
 from matplotlib import pyplot as plt
 from plotly.express.colors import sample_colorscale
@@ -16,10 +20,12 @@ import logging
 
 from torch.utils.data import DataLoader
 from torchvision.datasets import CelebA
+from torchvision.transforms import ToTensor
+from torchvision.utils import make_grid
 
 from utils import set_all_seeds, plotly_init, save_fig, set_fig_config, np_gaussian_pdf, CELEBA_ROOT, TEST_IDENTITIES, \
     get_default_forget_transform, load_model, BASE_MODEL_PATH, save_dict_as_json, forward_kl_univariate_gaussians, \
-    reverse_kl_univariate_gaussians
+    reverse_kl_univariate_gaussians, images2video
 
 
 def plot_dummy_gaussian(save_path: str, mean: float = 0.0, std: float = 0.5, color_index=0, forget=False):
@@ -572,16 +578,195 @@ def supp_normality_gaussians(valid=True):
     fig.write_image(f"images/supp/normality_gaussians_{name}.pdf")
 
 
+class VideoArgs(NamedTuple):
+    n_row: int = 4
+
+
+class CopyImagesArgs(NamedTuple):
+    start_idx: int = 8
+    end_idx: int = 16
+
+
+class LatexGridArgs(NamedTuple):
+    folder_name: str
+    start_idx: int = 8
+    end_idx: int = 16
+
+
+def same_identities_images(exp_name: str,
+                           images_indices: List[Union[str, int]],
+                           sampling_steps: List[Union[str, int]],
+                           output_dir: str,
+                           copy_images_args: Optional[CopyImagesArgs] = None,
+                           video_args: Optional[VideoArgs] = None,
+                           latex_table: Optional[LatexGridArgs] = None):
+    assert isinstance(images_indices, list) and images_indices
+    if isinstance(images_indices[0], int):
+        images_indices = [str(idx) for idx in images_indices]
+    assert isinstance(sampling_steps, list) and sampling_steps
+    if isinstance(sampling_steps[0], int):
+        sampling_steps = [str(idx) for idx in sampling_steps]
+    os.makedirs(output_dir, exist_ok=True)
+    if copy_images_args is not None:
+        for step in sampling_steps:
+            for idx in images_indices[copy_images_args.start_idx: copy_images_args.end_idx]:
+                src_image = f"{exp_name}/images/{step}/temp_5_sample_{idx}.png"
+                dest = f"{output_dir}/step_{step}_id_{idx}.png"
+                shutil.copy(src_image, dest)
+    if video_args is not None:
+        dir_list = [d for d in os.listdir(f"{exp_name}/images") if os.path.isdir(f"{exp_name}/images/{d}")]
+        out_path = f"{output_dir}/vid.mp4"
+        dir_list.sort(key=lambda dir_name: int(dir_name))
+        pil_to_tens = ToTensor()
+        vid_images = []
+        for d in dir_list:
+            cur_images = os.listdir(f"{exp_name}/images/{d}")
+            cur_images = list(filter(lambda name: name.replace("temp_5_sample_", "").replace(".png", "") in images_indices, cur_images))
+            cur_images.sort(key=lambda name: int(name.replace("temp_5_sample_", "").replace(".png", "")))
+            cur_images = torch.stack([pil_to_tens(Image.open(f"{exp_name}/images/{d}/{im}")) for im in cur_images])
+            cur_grid_image = make_grid(cur_images, nrow=video_args.n_row).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to(
+                "cpu", torch.uint8).numpy()
+            vid_images.append(cur_grid_image)
+        images2video(vid_images, video_path=out_path, fps=25)
+    if latex_table is not None:
+        identities = images_indices[latex_table.start_idx:latex_table.end_idx]
+        with open(f"{output_dir}/table.tex", "w") as out_file:
+            for line_idx, idx in enumerate(identities):
+                cur_str = '\t'
+                for step_idx, step in enumerate(sampling_steps):
+                    # if step_idx == 0:
+                    #     cur_str += r'\raisebox{\wr}{\rotatebox{90}{' + step + '}}&'
+                    cur_str += r'\includegraphics[frame,width=\ww,keepaspectratio]{supp/images/' + latex_table.folder_name + '/step_' + step + '_id_' + idx + '.png}'
+                    if step_idx != len(sampling_steps) - 1:
+                        cur_str += r'&'
+                if line_idx != len(identities) - 1:
+                    cur_str += r'\tabularnewline'
+                print(cur_str)
+                out_file.write(cur_str + '\n')
+
+
+def same_identity_different_attributes(exps_names: List[str],
+                                       images_indices: List[Union[str, int]],
+                                       sampling_steps: List[Union[str, int]],
+                                       output_dir: str,
+                                       copy_images_args: Optional[CopyImagesArgs] = None,
+                                       video_args: Optional[VideoArgs] = None,
+                                       latex_table: Optional[LatexGridArgs] = None):
+    assert isinstance(images_indices, list) and images_indices
+    if isinstance(images_indices[0], int):
+        images_indices = [str(idx) for idx in images_indices]
+    assert isinstance(sampling_steps, list) and sampling_steps
+    if isinstance(sampling_steps[0], int):
+        sampling_steps = [str(idx) for idx in sampling_steps]
+    os.makedirs(output_dir, exist_ok=True)
+    if copy_images_args is not None:
+        for exp_name in exps_names:
+            cur_name = exp_name.split("/")[-1].lower()
+            for step in sampling_steps:
+                for idx in images_indices[copy_images_args.start_idx: copy_images_args.end_idx]:
+                    src_image = f"{exp_name}/images/{step}/temp_5_sample_{idx}.png"
+                    dest = f"{output_dir}/{cur_name}_step_{step}_id_{idx}.png"
+                    shutil.copy(src_image, dest)
+    if video_args is not None:
+        # each column will hold images of the same attribute change. Each row will hold images of the same identity
+        assert video_args.n_row == (len(exps_names) + 1)
+        relevant_identities = images_indices[:video_args.n_row]
+        pil_to_tens = ToTensor()
+        out_path = f"{output_dir}/vid.mp4"
+        vid_images = []
+        n_samples = sorted([d for d in os.listdir(f"{exps_names[0]}/images") if os.path.isdir(f"{exps_names[0]}/images/{d}")],
+                           key=lambda dir_name: int(dir_name))
+        draw_names = [exp_name.split("/")[-1].lower().replace("forget", "- ").replace("increase", "+ ").replace("_", "").replace("mouthslightlyopen", "open mouth") for exp_name in exps_names]
+        draw_names.insert(len(exps_names) // 2, "original")
+        font = font_manager.FontProperties(family='serif')
+        file = font_manager.findfont(font)
+        font = ImageFont.truetype(file, size=17)
+        for n in n_samples[:-50]:
+            cur_frame_images = []
+            for identity in relevant_identities:
+                for col_idx, exp_name in enumerate(exps_names):
+                    if len(exps_names) // 2 - 1 < col_idx <= len(exps_names) // 2:
+                        cur_frame_images.append(f"{exp_name}/images/0/temp_5_sample_{identity}.png")
+                    cur_frame_images.append(f"{exp_name}/images/{n}/temp_5_sample_{identity}.png")
+            cur_frame_images = torch.stack([pil_to_tens(Image.open(im)) for im in cur_frame_images])
+            cur_frame_grid = make_grid(cur_frame_images, nrow=video_args.n_row).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
+            grid_h, grid_w, grid_c = cur_frame_grid.shape
+            text_area_size = 100
+            with_text = np.zeros((grid_h + text_area_size, grid_w, grid_c), dtype=np.uint8)
+            with_text[text_area_size:] = cur_frame_grid
+            with_text = Image.fromarray(with_text)
+            draw = ImageDraw.Draw(with_text)
+            offset = 0
+            for i, text in enumerate(draw_names):
+                if i == len(draw_names) // 2:
+                    offset = 30
+                draw.text((grid_w // len(draw_names) * i + offset, text_area_size // 2), text, (255, 255, 255), font=font)
+
+            vid_images.append(np.asarray(with_text))
+        images2video(vid_images, video_path=out_path, fps=20)
+
+    if latex_table is not None:
+        identity_idx = images_indices[0]
+        with open(f"{output_dir}/table.tex", "w") as out_file:
+            for exp_idx, exp_name in enumerate(exps_names):
+                cur_name = exp_name.split("/")[-1].lower()
+                cur_str = '\t'
+                for step_idx, step in enumerate(sampling_steps):
+                    # if step_idx == 0:
+                    #     cur_str += r'\raisebox{\wr}{\rotatebox{90}{' + exp_name + '}}&'
+                    cur_str += r'\includegraphics[frame,width=\ww,keepaspectratio]{supp/images/' + latex_table.folder_name + f'/{cur_name}_step_' + step + '_id_' + identity_idx + '.png}'
+                    if step_idx != len(sampling_steps) - 1:
+                        cur_str += r'&'
+                if exp_idx != len(exps_names) - 1:
+                    cur_str += r'\tabularnewline'
+                print(cur_str)
+                out_file.write(cur_str + '\n')
+
+
 if __name__ == '__main__':
     set_all_seeds(37)
     logging.getLogger().setLevel(logging.INFO)
+    base_dir = "experiments/forget_attributes_thresh_4"
+    # exp_name = "experiments/forget_attributes_thresh_4/forget_Blond_Hair"
+    # images_indices = [5, 11, 17, 20, 34, 37, 41, 68, 87, 93, 95, 98, 115, 122, 123, 125]
+    # images_indices = [87, 93, 95, 98, 115, 122, 123, 125]
+    sampling_steps = [0, 25, 50, 75, 100, 125, 150, 175]
+    # image_indices = [4, 10, 15, 21, 22, 25, 30, 35]
+    # image_indices = [10, 15, 21, 25, 30, 35]
+    out_dir = "outputs/supp_grids/same_identity_change_attributes"
+    exps_names = [base_dir + "/" + s for s in ['forget_No_Beard', 'forget_Mouth_Slightly_Open', 'increase_Eyeglasses', 'increase_Bald']]
+    # copy_image_args = CopyImagesArgs(start_idx=0, end_idx=5)
+    images_indices_increase_blond = [2, 7, 14, 16, 22, 26, 29, 30, 71, 74, 77, 54, 56, 59, 60, 91]
+    images_indices_increase_male = [8, 12, 6, 4]
+    add_increase_blond_indices = [17]
+    same_identities_images(exp_name=base_dir + '/increase_blond_smiling',
+                           images_indices=add_increase_blond_indices,
+                           sampling_steps=sampling_steps[:-1],
+                           output_dir="outputs/supp_grids/increase_blond_smiling",
+                           copy_images_args=CopyImagesArgs(start_idx=0, end_idx=16),
+                           # copy_images_args=CopyImagesArgs(start_idx=0, end_idx=8),
+                           # video_args=VideoArgs(),
+                           video_args=None,
+                           latex_table=LatexGridArgs(folder_name='increase_blond_smiling', start_idx=0, end_idx=16))
+
+    # video_args = VideoArgs(n_row=5)
+    # latex_args = LatexGridArgs(folder_name="same_identity_change_attributes")
+    # images_args = CopyImagesArgs(start_idx=1, end_idx=2)
+    # same_identity_different_attributes(exps_names, [image_indices[1]], sampling_steps, out_dir, copy_images_args=None, video_args=None, latex_table=latex_args)
+    # same_identities_images(exp_name,
+    #                        images_indices,
+    #                        sampling_steps,
+    #                        out_dir,
+    #                        copy_images_args=None,
+    #                        video_args=VideoArgs(),
+    #                        latex_table=LatexGridArgs(folder_name='same_identity_change_forget_blond'))
     # ids = TEST_IDENTITIES[:1]
-    exp_prefix = "experiments/ablation"
-    exp_suffix = "distribution_stats/valid_partial_10000/nll_distribution.pt"
-    ablation_relevant_names = ["backward_only", "forward_only"]
-    dist_files = [f"{exp_prefix}/{name}_15_image_id_10015/{exp_suffix}" for name in ablation_relevant_names]
-    dist_files.append("experiments/forget_all_identities_log_10/15_image_id_10015/distribution_stats/valid_partial_10000/nll_distribution.pt")
-    names = ["                   "] * 3
+    # exp_prefix = "experiments/ablation"
+    # exp_suffix = "distribution_stats/valid_partial_10000/nll_distribution.pt"
+    # ablation_relevant_names = ["backward_only", "forward_only"]
+    # dist_files = [f"{exp_prefix}/{name}_15_image_id_10015/{exp_suffix}" for name in ablation_relevant_names]
+    # dist_files.append("experiments/forget_all_identities_log_10/15_image_id_10015/distribution_stats/valid_partial_10000/nll_distribution.pt")
+    # names = ["                   "] * 3
     # base_dir = "experiments/forget_attributes_2/debias_male_2"
     # base_dir = "experiments/forget_attributes_2/debias_male_3"
     # save_name = "debias.pdf"
@@ -589,5 +774,5 @@ if __name__ == '__main__':
     # plot_teaser_figure(file_name='teaser_forget.pdf')
     # supp_normality_gaussians(valid=True)
     # supp_normality_gaussians(valid=False)
-    ablation_plot_distributions(dist_files, names, save_path="images/supp/ablation.pdf", save_scores=False, convert2bpd=True)
+    # ablation_plot_distributions(dist_files, names, save_path="images/supp/ablation.pdf", save_scores=False, convert2bpd=True)
     # find_teaser_figure_image(base_dir=base_dir)
