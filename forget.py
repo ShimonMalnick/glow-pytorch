@@ -176,8 +176,22 @@ def forget_alpha(args: edict, remember_iter: Iterator, forget_ds: Dataset, model
     cur = time()
     avg_time = 0
     for i in range(args.iter):
-        forget_loss = get_forget_distance_loss(n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
-                                               all_forget_images, args.batch, model)
+        if args.forget_loss_baseline:
+            log_p, log_det, _ = model(all_forget_images + torch.rand_like(all_forget_images) / n_bins)
+            log_det = log_det.mean()
+            forget_loss, _, _ = calc_regular_loss(log_p, log_det, args.img_size, n_bins,
+                                                                     weights=None)
+            forget_loss *= -1
+            with torch.no_grad():
+                distances = get_forget_distance_loss(n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
+                                                   all_forget_images, args.batch, model)
+                if distances is None:
+                    logging.info("breaking after {} iterations".format(i))
+                    wandb.log({f"achieved_thresh": i})
+                    break
+        else:
+            forget_loss = get_forget_distance_loss(n_bins, n_pixels, args.eval_mu, args.eval_std, args.forget_thresh,
+                                                   all_forget_images, args.batch, model)
         if forget_loss is None:
             logging.info("breaking after {} iterations".format(i))
             wandb.log({f"achieved_thresh": i})
