@@ -61,7 +61,8 @@ def calc_loss_changed(log_p, logdet, image_size, n_bins):
 
 
 def train(args, model, optimizer):
-    dataset = iter(sample_data(args.path, args.batch, args.img_size, data_split=args.data_split))
+    dataset = iter(sample_data(args.path, args.batch, args.img_size, data_split=args.data_split,
+                               training_labels=args.training_labels))
     print("Loaded Dataset", flush=True)
     n_bins = 2.0 ** args.n_bits
 

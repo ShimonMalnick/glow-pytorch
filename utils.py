@@ -127,7 +127,8 @@ def get_args(**kwargs) -> EasyDict:
                                             ' remember data in every update, by using'
                                             ' alpha * forget_loss + (1 - alpha) * remember_loss', type=float)
         parser.add_argument('--loss', help='which loss function to use', choices=['reverse_kl', 'forward_kl', 'both'])
-
+        parser.add_argument('--forget_loss_baseline', help='if 1, whether to use the forget loss as minus the NLL loss '
+                                                     '(i.e. reducing the likelihood)', type=int)
     args = parser.parse_args()
     out_dict = EasyDict()
     if args.config:

@@ -16,7 +16,8 @@ from utils import get_args, save_dict_as_json, load_model, CELEBA_ROOT, \
     BASE_MODEL_PATH, nll_to_sigma_normalized, set_all_seeds, normality_test, images2video, set_fig_config, \
     save_fig, plotly_init, CELEBA_NUM_IDENTITIES, OUT_OF_TRAINING_IDENTITIES, TEST_IDENTITIES, get_base_model_args, \
     TEST_IDENTITIES_BASE_DIR, get_partial_dataset, mean_float_jsons, multiprocess_func, \
-    identity2median_likelihood_images, TIME_PER_ITER_TAME, sample_data, get_dataset, compute_dataloader_bpd
+    identity2median_likelihood_images, TIME_PER_ITER_TAME, sample_data, get_dataset, compute_dataloader_bpd, CIFAR_ROOT, \
+    CIFAR_GLOW_CKPT_PATH
 from constants import CELEBA_ATTRIBUTES_MAP
 import os
 import torch
@@ -28,6 +29,7 @@ from datasets import CelebAPartial
 from easydict import EasyDict as edict, EasyDict
 import matplotlib
 import plotly.graph_objects as go
+import torchvision.datasets as vision_datasets
 from torch.multiprocessing import Process, set_start_method
 
 matplotlib.use('agg')
@@ -65,8 +67,7 @@ def eval_model(dset_tuples: Iterable[Tuple[str, Dataset]], n_bits: int, model, d
 def eval_models(ckpts: Iterable[Tuple[str, str]], args: Dict, dsets_tuples: Iterable[Tuple[str, Dataset]], **kwargs):
     """
     Used for Evaluation of multiple models on the same data sets
-    :param dsets_tuples:
-    :param dsets: tuples of (name, ds) where ds is a dataset and name is the corresponding name of that data.
+    :param dsets_tuples: tuples of (name, ds) where ds is a dataset and name is the corresponding name of that data.
     :param ckpts: list of tuples of (ckpt, names) where ckpt is a path to a checkpoint and name is the corresponding
      model name
     :param args: arguments relevant for the models (same arguments to all models)
@@ -1193,9 +1194,9 @@ def create_table_data(base_dir: str, out_dir, split='valid', compute_relatives=F
     os.makedirs(f"{out_dir}", exist_ok=True)
     for n in [1, 4, 8, 15]:
         if compute_relatives:
-            jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_relatives.json")
+            jsons_paths = glob(f"{base_dir}/*{n}_image_id_*/distri*/{split}*/forget_relatives.json")
         else:
-            jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_quantiles.json")
+            jsons_paths = glob(f"{base_dir}/*{n}_image_id_*/distri*/{split}*/forget_quantiles.json")
         relevant_data_dicts = []
         for j in jsons_paths:
             with open(j) as f:
@@ -1393,7 +1394,7 @@ def get_base_model_likelihood_on_test_identities(out_dir='', data_split='train')
     save_dict_as_json(quantiles_dict, f"{out_dir}/quantiles.json")
 
 
-def get_timing(base_dir, out_dir=''):
+def get_timing(base_dir, out_dir='', allow_not_found=False, default_max_iter=800):
     n_images = [1, 4, 8, 15]
     # for delta in deltas:
     time_values = {n: [] for n in n_images}
@@ -1401,19 +1402,19 @@ def get_timing(base_dir, out_dir=''):
     for f in files:
         with open(f, "r") as cur_file:
             lines = [line for line in cur_file.readlines() if 'INFO:root:breaking' in line]
-            assert len(lines) == 1
-        cur_n_images = int(re.match(r'.*forget_identity_.*/(\d+)_image_id.*', f).group(1))
-        break_num = int(re.match(r'INFO:root:breaking after (\d+) iterations.*', lines[0]).group(1))
-        assert cur_n_images in time_values
+            cur_n_images = int(re.match(r'.*forget_identity_.*/(\d+)_image_id.*', f).group(1))
+            assert cur_n_images in time_values
+            if allow_not_found and len(lines) == 0:
+                break_num = default_max_iter
+            else:
+                assert len(lines) == 1
+                break_num = int(re.match(r'INFO:root:breaking after (\d+) iterations.*', lines[0]).group(1))
         time_values[cur_n_images].append(break_num)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
     out = {}
     for n in n_images:
-        cur_out = iterations2time_mean_std(time_values[n], time_per_iter=TIME_PER_ITER_TAME)
-        # cur_out = {'timing_iterations': time_values[n],
-        #            'timing_iterations_mean': sum(time_values[n]) / len(time_values[n]),
-        #            'timing_iterations_std': np.std(time_values[n]).item()}
+        cur_out = {'timing': iterations2time_mean_std(time_values[n], time_per_iter=TIME_PER_ITER_TAME)}
         if out_dir:
             out_file = f"{out_dir}/{n}.json"
             if os.path.isfile(out_file):
@@ -1431,7 +1432,7 @@ def accumulate_stats_with_std(data_dicts: List[dict], thresh=4, data_is_relative
     out = {'forget': [], 'ref_forget': [], 'ref_random': [], 'neutral': [], 'nn': []}
 
     # convert relative distance to likelihood quantile, or just use an identity function with extra dummy parameter
-    relative_func = rel_dist2likelihood_qunatile if data_is_relative else lambda x, _: x
+    relative_func = rel_dist2likelihood_qunatile if data_is_relative else lambda x, return_torch: x
     for idx in range(len(data_dicts)):
         # compute quantile drops
         forget_base = accumulated['base']['forget'][idx]
@@ -1557,10 +1558,10 @@ def get_tables_raw_data_with_std(base_dir, out_dir='', split='train', supp_data=
         thresh = json.load(f)['forget_thresh']
     for n in [1, 4, 8, 15]:
         data_is_relative = True
-        jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_relatives.json")
+        jsons_paths = glob(f"{base_dir}/*{n}_image_id_*/distri*/{split}*/forget_relatives.json")
         if not jsons_paths:
             data_is_relative = False
-            jsons_paths = glob(f"{base_dir}/{n}_image_id_*/distri*/{split}*/forget_quantiles.json")
+            jsons_paths = glob(f"{base_dir}/*{n}_image_id_*/distri*/{split}*/forget_quantiles.json")
             assert jsons_paths, f"no jsons found for {n} images"
         relevant_data_dicts = []
         for j in jsons_paths:
@@ -1587,10 +1588,11 @@ def save_bpd_several_models(models_paths: List[str], args, dl, save_path):
     save_dict_as_json(out_dict, save_path)
 
 
-def base_dir2table(base_dir, jsons_out_dir, split='train', save_path='', supp_data=False):
+def base_dir2table(base_dir, jsons_out_dir, split='train', save_path='', supp_data=False, allow_not_reaching_threshold=False):
     save_str = ''
     if not all(os.path.exists(f"{jsons_out_dir}/{n}.json") for n in [1, 4, 8, 15]):
         get_tables_raw_data_with_std(base_dir=base_dir, out_dir=jsons_out_dir, split=split, supp_data=supp_data)
+        get_timing(base_dir, save_path, allow_not_found=allow_not_reaching_threshold)
     for n in [1, 4, 8, 15]:
         with open(f"{jsons_out_dir}/{n}.json") as f:
             data = json.load(f)
@@ -1602,7 +1604,6 @@ def base_dir2table(base_dir, jsons_out_dir, split='train', save_path='', supp_da
     if save_path:
         with open(save_path, 'w') as f:
             f.write(save_str)
-
 
 def iterations2time_mean_std(iterations: Union[List[int], torch.Tensor, np.ndarray, str],
                              time_per_iter=TIME_PER_ITER_TAME):
@@ -1626,22 +1627,65 @@ def iterations2time_mean_std(iterations: Union[List[int], torch.Tensor, np.ndarr
             'std': np.std(iterations * time_per_iter / SECONDS_IN_MINUTE)}
 
 
+def get_cifar_ds_distirbution(train=True, batch_size=1024, cifar_model_dir=None, ckpt_path=CIFAR_GLOW_CKPT_PATH,
+                              save_dir=None):
+    if cifar_model_dir is None:
+        cifar_model_dir = "experiments/train/continue_cifar_train"
+    with open(f"{cifar_model_dir}/args.json") as f:
+        args = EasyDict(json.load(f))
+    args.ckpt_path = ckpt_path
+    transform = get_default_forget_transform(args.img_size, args.n_bits)
+    cifar_ds = vision_datasets.CIFAR10(CIFAR_ROOT, transform=transform, download=True, train=train)
+    indices = torch.randperm(len(cifar_ds))[:10000]
+    cifar_ds = Subset(cifar_ds, indices)
+    if save_dir is None:
+        save_dir = f"{cifar_model_dir}/distribution_stats" + ("_train" if train else "_test") + "_partial_10000"
+    compute_ds_distribution(batch_size=batch_size, save_dir=save_dir, args=args, ds=cifar_ds)
+
+
+def save_cifar_ks_scores(cifar_model_dir=None):
+    from utils import normality_test
+    if cifar_model_dir is None:
+        cifar_model_dir = "/mnt/raid/home/shimon_malnik/glow/experiments/train/train_cifar"
+    for split in ["train", "test"]:
+        distribution_dir = f"{cifar_model_dir}/distribution_stats_{split}_partial_10000"
+        samples = torch.load(f"{distribution_dir}/nll_distribution.pt")
+        samples = samples[torch.randperm(len(samples))]
+        score = normality_test(samples)
+        print(f"KS score for {split}: ", score)
+        with open(f"{distribution_dir}/ks_score.txt", "w") as f:
+            f.write(str(score))
+
+
+def save_cifar_distribution_plots(cifar_model_dir=None, cifar_ckpt_path=None):
+    from utils import plotly_qq_plot
+    from plotting_for_paper import supp_normality_gaussians
+    save_cifar_ks_scores()
+    if cifar_model_dir is None:
+        cifar_model_dir = "/mnt/raid/home/shimon_malnik/glow/experiments/train/train_cifar"
+    if cifar_ckpt_path is None:
+        cifar_ckpt_path = f"{cifar_model_dir}/checkpoints/model_270001.pt"
+    for split in ["train", "test"]:
+        distribution_dir = f"{cifar_model_dir}/distribution_stats_{split}_partial_10000"
+        get_cifar_ds_distirbution(train=split == "train", cifar_model_dir=cifar_model_dir, ckpt_path=cifar_ckpt_path,
+                                  save_dir=distribution_dir)
+        supp_normality_gaussians(valid=True, dist_path=f"{distribution_dir}/nll_distribution.pt",
+                                 out_path=f"{distribution_dir}/normality.png")
+        supp_normality_gaussians(valid=True, dist_path=f"{distribution_dir}/nll_distribution.pt",
+                                 out_path=f"{distribution_dir}/normality.pdf")
+        samples = torch.load(f"{distribution_dir}/nll_distribution.pt")
+        plotly_qq_plot(samples, save_path=f"{distribution_dir}/qq_plot.pdf")
+        plotly_qq_plot(samples, save_path=f"{distribution_dir}/qq_plot.png")
+
+
 if __name__ == '__main__':
     # set logging to debug mode
     logging.basicConfig(level=logging.DEBUG)
     set_all_seeds(seed=37)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_dir = "/mnt/raid/home/shimon_malnik/glow/experiments/forget_identity_thresh_4_on_server"
-    # out_dir = '/mnt/raid/home/shimon_malnik/glow/outputs/forget_identity_thresh_4_train_quantiles_std_all_data'
-    out_dir = "/mnt/raid/home/shimon_malnik/glow/outputs/forget_identity_thresh_4_train_supp"
-
-    # get_tables_raw_data_with_std(base_dir=base_dir, out_dir=out_dir, supp_data=True)
-    # for n in [1, 4, 8, 15]:
-    #     cur_dict = f"/mnt/raid/home/shimon_malnik/glow/outputs/forget_identity_thresh_4_train_quantiles_drop/{n}.json"
-    #     out_dict = iterations2time_mean_std(cur_dict)
-    #     with open(f"{out_dir}/{n}.json", 'r') as f:
-    #         old_data = json.load(f)
-    #     old_data['timing'] = out_dict
-    #     save_dict_as_json(old_data, f"{out_dir}/{n}.json")
-
-    base_dir2table(base_dir, out_dir, supp_data=True, save_path=f"{out_dir}/table.txt")
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    base_dir = "experiments/baseline_forget_loss_ll_forget_identity_thresh_4_on_server"
+    out_dir = "outputs/baseline_forget_loss_ll_table"
+    base_dir2table(base_dir, out_dir, supp_data=False, save_path=f"{out_dir}/table.txt")
+    # base_dir = "experiments/baseline_forget_identity_thresh_4_on_server"
+    # out_dir = "outputs/baseline_alpha_0_table"
