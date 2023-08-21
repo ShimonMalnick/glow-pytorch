@@ -1,5 +1,6 @@
 import json
 import os
+import pdb
 import re
 from glob import glob
 from typing import Union, List, Dict, Optional, Callable
@@ -11,14 +12,15 @@ from PIL import Image
 from torch.utils.data import Subset, Dataset, DataLoader
 from easydict import EasyDict
 from torchvision.transforms import ToTensor
-from cifar_classifier import load_cifar_classifier, evaluate_cifar_random_samples_classification
+from cifar_classifier import load_cifar_classifier, evaluate_cifar_random_samples_classification, \
+    get_cifar_classes_cache
 from attribute_classifier import CelebaAttributeCls, DEFAULT_CLS_CKPT, load_indices_cache, get_cls_default_transform
 import torch
 from forget import make_forget_exp_dir, get_data_iterator, get_kl_loss_fn, get_log_p_parameters, \
     get_kl_and_remember_loss, prob2bpd
 from utils import set_all_seeds, get_args, get_default_forget_transform, load_model, CELEBA_ROOT, \
     save_dict_as_json, compute_dataloader_bpd, save_model_optimizer, BASE_MODEL_PATH, get_resnet_50_normalization, \
-    plotly_init, save_fig, set_fig_config, images2video, CIFAR_GLOW_CKPT_PATH
+    plotly_init, save_fig, set_fig_config, images2video, CIFAR_GLOW_CKPT_PATH, get_dataset
 import logging
 from model import Glow
 from torchvision.datasets import CelebA
@@ -267,6 +269,7 @@ def get_model_latents(img_size, n_flow, n_block, n_sample, temp, device) -> List
 
 
 def main():
+    # os.environ["WANDB_DISABLED"] = "true"  # for debugging without wandb
     logging.getLogger().setLevel(logging.INFO)
     args = get_args(forget=True, forget_attribute=True)
     all_devices = list(range(torch.cuda.device_count()))
@@ -283,22 +286,28 @@ def main():
     original_model: Glow = load_model(args, device=original_model_device, training=False)
     original_model.requires_grad_(False)
     transform = get_default_forget_transform(args.img_size, args.n_bits)
-
     assert args.forget_attribute is not None, "Must specify attribute to forget"
-    forget_indices = load_indices_cache(args.forget_attribute)
+    if 'celeba' in args.path:
+        forget_indices = load_indices_cache(args.forget_attribute)
+    elif 'cifar' in args.path:
+        classes_cache = get_cifar_classes_cache(train=True)
+        forget_indices = torch.tensor(classes_cache[args.forget_attribute])
+    else:
+        raise ValueError(f"Unknown dataset {args.path}")
     if args.forget_additional_attribute is not None:
         # forget_indices = torch.cat((forget_indices, load_indices_cache(args.forget_additional_attribute)))
         # doing intersection of these groups
         forget_indices = torch.tensor(
             np.intersect1d(forget_indices, load_indices_cache(args.forget_additional_attribute)))
 
-    celeba_ds = CelebA(root=CELEBA_ROOT, split='train', transform=transform, target_type='attr')
+    # ds = CelebA(root=CELEBA_ROOT, split='train', transform=transform, target_type='attr')
+    ds = get_dataset(args.path, args.img_size, transform=transform)
     if 'debias' in args and args.debias == 1:
-        remember_ds = Subset(celeba_ds, forget_indices)
-        forget_ds = Subset(celeba_ds, list(set(range(len(celeba_ds))) - set(forget_indices.tolist())))
+        remember_ds = Subset(ds, forget_indices)
+        forget_ds = Subset(ds, list(set(range(len(ds))) - set(forget_indices.tolist())))
     else:
-        forget_ds = Subset(celeba_ds, forget_indices)
-        remember_ds = Subset(celeba_ds, list(set(range(len(celeba_ds))) - set(forget_indices.tolist())))
+        forget_ds = Subset(ds, forget_indices)
+        remember_ds = Subset(ds, list(set(range(len(ds))) - set(forget_indices.tolist())))
 
     forget_optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     args["remember_ds_len"] = len(remember_ds)
@@ -488,6 +497,29 @@ def image_folders_to_grid_video(exp_dir, n_images=16, nrow=4, out_path='', start
     images2video(vid_images, video_path=out_path, fps=25)
 
 
+def save_model_images_several_temps(model_dir, model_ckpt=None, n_samples=32):
+    with open(f"{model_dir}/args.json") as f:
+        args = EasyDict(json.load(f))
+    args.ckpt_path = model_ckpt
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(args, device, training=False)
+    for temp in [0.3, 0.5, 0.7, 1.0]:
+        latents = get_model_latents(args.img_size, args.n_flow, args.n_block, n_sample=n_samples, temp=temp, device=device)
+        out_dir = f"{model_dir}/samples_temp_{int(temp * 10)}"
+        save_model_images(model, out_dir, n_imgs=n_samples, latents=latents, temp=temp)
+
+
 if __name__ == '__main__':
     set_all_seeds(seed=37)
     main()
+    # d = "experiments/train/train_cub"
+    # pil_to_tens = ToTensor()
+    # for temp in [0.3, 0.5, 0.7, 1.0]:
+    #     name = int(temp * 10)
+    #     base_dir = f"{d}/samples_temp_{name}"
+    #     cur_images = os.listdir(base_dir)
+    #     cur_images = torch.stack([pil_to_tens(Image.open(f"{base_dir}/{im}")) for im in cur_images])
+    #     cur_grid_image = make_grid(cur_images, nrow=4).mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu",
+    #                                                                                                             torch.uint8).numpy()
+    #     im = Image.fromarray(cur_grid_image)
+    #     im.save(f"{d}/images_temp_{name}.png")
