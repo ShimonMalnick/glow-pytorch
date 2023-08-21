@@ -1,5 +1,7 @@
 import json
 import logging
+from itertools import repeat
+
 import math
 import os
 import pdb
@@ -11,10 +13,10 @@ import numpy as np
 import torch
 import random
 from torch.utils.data import DataLoader, Subset
-from torchvision.datasets import CelebA
+from torchvision.datasets import CelebA, CIFAR10
 from utils import get_dataset, create_horizontal_bar_plot, CELEBA_ROOT, CELEBA_NUM_IDENTITIES, \
     compute_cosine_similarity, get_partial_dataset, TEST_IDENTITIES, plotly_init, save_fig, multiprocess_func, \
-    OUT_OF_TRAINING_IDENTITIES
+    OUT_OF_TRAINING_IDENTITIES, CIFAR_ROOT
 from time import time
 import plotly.graph_objects as go
 from multiprocessing import Pool
@@ -25,6 +27,7 @@ import shutil
 import torchvision.datasets as vision_dsets
 from torchvision.transforms import ToTensor
 import matplotlib
+
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 
@@ -130,6 +133,53 @@ def get_celeba_attributes_stats(
     print("plotting took ", round(time() - save_time, 2), " seconds")
 
 
+def parse_attributes_line(line, names2split, attributes_indices, split_idx):
+    line = line.split(' ')
+    file_name, line = line[0], line[1:]
+    if names2split[file_name] != split_idx:
+        return 0
+    line = [part for part in line if part]
+    out = 1
+    for att_idx in attributes_indices:
+        if line[att_idx] != '1':
+            out = 0
+            break
+    return out
+
+
+def get_attributes_stats(attr_file_path: str = f'{CELEBA_ROOT}/celeba/list_attr_celeba.txt',
+                         split_file_path: str = f'{CELEBA_ROOT}/celeba/list_eval_partition.txt',
+                         attributes_indices: List[int] = None, save_stats_path='', split='train'):
+    split2idx = {'train': 0, 'valid': 1, 'test': 2}
+    with open(split_file_path, 'r') as f:
+        lines = f.readlines()
+        lines = [line.strip().split(' ') for line in lines]
+        names2split = {line[0]: int(line[1]) for line in lines}
+    split_total = sum([1 for name in names2split if names2split[name] == split2idx[split]])
+    with open(attr_file_path, 'r') as f:
+        num_images = int(f.readline().strip())
+        assert num_images == len(names2split)
+        attributes = f.readline().strip().split(' ')
+        attributes_map = {i: attribute for i, attribute in enumerate(attributes)}
+        lines = []
+        for i in range(num_images):
+            lines.append(f.readline().strip())
+        n_calls = len(lines)
+        split_idx = split2idx[split]
+        with Pool(16) as p:
+            map_result = p.starmap(parse_attributes_line,
+                                   zip(lines, repeat(names2split, n_calls), repeat(attributes_indices, n_calls),
+                                       repeat(split_idx, n_calls)))
+        reduced = reduce(lambda d1, d2: d1 + d2, map_result)
+    attributes_names = [attributes_map[idx] for idx in attributes_indices]
+    print("Reduced score for attributes: ", attributes_names, " is: ", reduced, "out of ", split_total)
+    if save_stats_path:
+        with open(save_stats_path, 'w') as f:
+            f.write(str(reduced) + '\n')
+            f.write(str(split_total))
+    return reduced
+
+
 class LineAttributeParser:
     def __init__(self, attributes_indices):
         self.attributes_indices = attributes_indices
@@ -145,8 +195,8 @@ class LineAttributeParser:
 
 
 def get_celeba_specific_attributes_stats(attributes_names: List[str],
-        attr_file_path: str = f'{CELEBA_ROOT}/celeba/list_attr_celeba.txt',
-        save_stats_path: str = ''):
+                                         attr_file_path: str = f'{CELEBA_ROOT}/celeba/list_attr_celeba.txt',
+                                         save_stats_path: str = ''):
     if not save_stats_path:
         save_stats_path = f'outputs/celeba_stats/{",".join(attributes_names)}_attributes_stats.json'
     start_parse = time()
@@ -164,7 +214,8 @@ def get_celeba_specific_attributes_stats(attributes_names: List[str],
         for i in range(num_images):
             lines.append(f.readline().strip())
         with Pool(16) as p:
-            map_result = p.map(LineAttributeParser([i for i in range(len(attributes)) if attributes[i] in attributes_names]), lines)
+            map_result = p.map(
+                LineAttributeParser([i for i in range(len(attributes)) if attributes[i] in attributes_names]), lines)
         reduced = reduce(lambda d1, d2: d1 + d2, map_result)
         for k in reduced:
             attributes_dict[attributes_map[k]] = reduced[k]
@@ -511,15 +562,18 @@ def plot_multiple_attributes(exps_dirs: List[str]):
             cur_name = attribute_dir.replace("forget_", "").replace("_", " ")
             with open(f"{exp}/{attribute_dir}/total_cls.json") as cls_j:
                 cur_data = json.load(cls_j)
-            data = sorted([(int(k), round(v['fraction'] * 100, 2)) for k, v in cur_data.items()], key=lambda tup: tup[0])
+            data = sorted([(int(k), round(v['fraction'] * 100, 2)) for k, v in cur_data.items()],
+                          key=lambda tup: tup[0])
             x, y = zip(*data)
             fig.add_trace(go.Scatter(x=x,
                                      y=y,
                                      name=cur_name,
                                      line=dict(color=colors[idx])))
         fig.update_layout(showlegend=True, plot_bgcolor='rgba(0,0,0,0)')
-        fig.update_xaxes(showgrid=False, gridcolor='blue', title_text="Step", showline=True, linewidth=2, linecolor='black')
-        fig.update_yaxes(showgrid=False, gridcolor='red', title_text="Classified samples [%]", showline=True, linewidth=2, linecolor='black')
+        fig.update_xaxes(showgrid=False, gridcolor='blue', title_text="Step", showline=True, linewidth=2,
+                         linecolor='black')
+        fig.update_yaxes(showgrid=False, gridcolor='red', title_text="Classified samples [%]", showline=True,
+                         linewidth=2, linecolor='black')
         fig.update_layout(width=500, height=250,
                           font=dict(family="Serif", size=14),
                           margin_l=5, margin_t=5, margin_b=5, margin_r=5)
@@ -527,7 +581,6 @@ def plot_multiple_attributes(exps_dirs: List[str]):
 
 
 def create_celeba_identities_index(outpath='outputs/identities_index.json'):
-
     out = {i: [] for i in range(1, CELEBA_NUM_IDENTITIES + 1)}
     ds = CelebA(CELEBA_ROOT, split='all', target_type='identity', transform=lambda x: 1)
     dl = DataLoader(ds, batch_size=512, shuffle=False, num_workers=16)
@@ -543,5 +596,11 @@ def create_celeba_identities_index(outpath='outputs/identities_index.json'):
     save_dict_as_json(out, outpath)
 
 
+
+
+
 if __name__ == '__main__':
-    pass
+    get_attributes_stats(attributes_indices=[9], split='train')
+    get_attributes_stats(attributes_indices=[9, 20], split='train')
+    get_attributes_stats(attributes_indices=[15], split='train')
+    get_attributes_stats(attributes_indices=[15, 20], split='train')
