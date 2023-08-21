@@ -231,7 +231,7 @@ def get_cls_default_transform(img_size=128) -> Compose:
     return Compose([Resize((img_size, img_size)), ToTensor(), get_resnet_50_normalization()])
 
 
-def get_cifar_classes_cache(train=True):
+def get_cifar_classes_cache(train=True) -> dict:
     train_str = "train" if train else "test"
     cache_path = f'cifar_classifier/class_caches/{train_str}.dict'
     if not os.path.isfile(cache_path):
